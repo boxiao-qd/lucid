@@ -34,6 +34,8 @@ class TodoDAO(BaseDAO):
         parent_id: str | None = None,
         tags: list[str] | None = None,
         todo_id: str | None = None,
+        status: str | None = None,
+        sort_order: int | None = None,
     ) -> TodoModel:
         session = self._session()
         import json
@@ -49,6 +51,10 @@ class TodoDAO(BaseDAO):
             existing.session_id = session_id
             existing.parent_id = parent_id
             existing.tags = json.dumps(tags) if tags else None
+            if status is not None:
+                existing.status = status
+            if sort_order is not None:
+                existing.sort_order = sort_order
             await session.commit()
             await session.refresh(existing)
             await session.close()
@@ -61,6 +67,8 @@ class TodoDAO(BaseDAO):
             title=title,
             description=description,
             priority=priority,
+            status=status or "pending",
+            sort_order=sort_order or 0,
             tags=json.dumps(tags) if tags else None,
             parent_id=parent_id,
         )

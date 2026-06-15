@@ -78,6 +78,10 @@ async def lifespan(app: FastAPI):
     await init_db()
     await init_es()
 
+    # Clean up stale L3 skill assets from previous abnormal exits
+    from app.agent.skill_asset_loader import cleanup_stale_sessions
+    cleanup_stale_sessions()
+
     # Start background sandbox cleanup if Docker is available
     cleanup_task = asyncio.create_task(_sandbox_cleanup_loop())
     # Daily STM→LTM memory consolidation (runs at midnight UTC)

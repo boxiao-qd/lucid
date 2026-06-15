@@ -272,6 +272,49 @@ body {
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: bold; color: #fff !important; }
 
+/* ── Notification detail markdown ────────────────────────────────────── */
+.notif-detail {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.notif-detail .md-content {
+  padding: 0.5em 0;
+}
+
+.notif-detail .md-content > h1:first-child,
+.notif-detail .md-content > h2:first-child {
+  position: relative;
+  padding-left: 0.75em;
+}
+.notif-detail .md-content > h1:first-child::before,
+.notif-detail .md-content > h2:first-child::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.15em;
+  bottom: 0.15em;
+  width: 3px;
+  background: var(--color-primary);
+  border-radius: 2px;
+  box-shadow: 0 0 6px rgba(0, 229, 255, 0.4);
+}
+
+.notif-detail .md-content blockquote {
+  position: relative;
+  background: rgba(0, 229, 255, 0.04);
+}
+.notif-detail .md-content blockquote::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--color-primary);
+  box-shadow: 0 0 8px rgba(0, 229, 255, 0.3);
+}
+
 /* ── Responsive helpers ────────────────────────────────────────────── */
 @media (max-width: 768px) {
   :root {

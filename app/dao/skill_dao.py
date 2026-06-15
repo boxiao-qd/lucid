@@ -155,6 +155,7 @@ class SkillDAO(BaseDAO):
             items.append({
                 "name": r[0], "description": desc, "is_global": r[2],
                 "object_key": r[3], "frontmatter": fm,
+                "has_assets": bool(r[3]),
             })
         await session.close()
         return items

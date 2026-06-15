@@ -1,8 +1,17 @@
-"""todo tool -- task planning and tracking for multi-step work."""
+"""todo tool -- REST API executor for frontend task operations.
+
+This module provides the execute function for the REST API endpoints
+that directly manage tasks in the database. It is NOT exposed as an
+LLM tool — TodoWrite is the single LLM-facing todo entry point,
+which syncs to the same database internally.
+"""
 
 import json
+import logging
 from app.dao.todo_dao import TodoDAO
 from app.db.database import get_session_factory
+
+log = logging.getLogger(__name__)
 
 VALID_STATUSES = ("pending", "in_progress", "completed", "cancelled")
 
@@ -24,45 +33,8 @@ def _summary(items: list[dict]) -> dict:
     return {"total": len(items), **counts}
 
 
-TOOL_DEF = {
-    "type": "function",
-    "function": {
-        "name": "todo",
-        "description": (
-            "Plan and track tasks with a todo list. Use for complex tasks with 3+ steps. "
-            "Only ONE item should be 'in_progress' at a time -- mark items 'completed' immediately "
-            "when done. Returns the full current list on every call. "
-            "Use merge=true to update existing items by id or add new ones; merge=false to replace the entire list."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "todos": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": {"type": "string", "description": "Unique identifier for this item"},
-                            "content": {"type": "string", "description": "Task description"},
-                            "status": {
-                                "type": "string",
-                                "enum": ["pending", "in_progress", "completed", "cancelled"],
-                                "description": "Current status of this item",
-                            },
-                        },
-                        "required": ["id", "content", "status"],
-                    },
-                    "description": "Todo items with id, content, and status",
-                },
-                "merge": {
-                    "type": "boolean",
-                    "default": False,
-                    "description": "true=update existing items by id, add new ones; false=replace entire list",
-                },
-            },
-        },
-    },
-}
+# No TOOL_DEF — this module is not an LLM tool.
+# Only the execute function is used by the REST API.
 
 
 async def execute(args_str: str, employee_id: int) -> str:

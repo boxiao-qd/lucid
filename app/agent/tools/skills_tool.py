@@ -73,9 +73,10 @@ TOOL_DEFS = [
         "function": {
             "name": "skill_view",
             "description": (
-                "Load a skill's full content by name. Returns the skill's markdown content "
-                "which can be applied as specialized instructions. Progressive disclosure: "
-                "use skills_list first, then skill_view for detailed content."
+                "Load a skill's full content by name. Returns markdown content + available remote assets "
+                "(scripts/references/assets) listing. Progressive disclosure: "
+                "use skills_list first, then skill_view for detailed content. "
+                "If assets exist, use skill_asset_pull to fetch them from remote storage."
             ),
             "parameters": {
                 "type": "object",
@@ -186,10 +187,29 @@ async def skill_view(args_str: str, employee_id: int) -> str:
         content_md = await dao.get_skill_md(name)
         await dao.increment_usage(skill.id)
 
+        # L3: scan remote assets (scripts/references/assets) if object_key exists
+        assets = None
+        if skill.object_key:
+            try:
+                from app.storage.object_storage import create_object_storage
+                storage = create_object_storage()
+                obj_key = skill.object_key
+                scripts = await storage.list_directory(employee_id, f"{obj_key}/scripts")
+                references = await storage.list_directory(employee_id, f"{obj_key}/references")
+                assets_files = await storage.list_directory(employee_id, f"{obj_key}/assets")
+                assets = {
+                    "scripts": scripts,
+                    "references": references,
+                    "assets": assets_files,
+                }
+            except Exception as e:
+                assets = {"error": f"Failed to list remote assets: {e}"}
+
         return json.dumps({
             "name": skill.name,
             "content_md": content_md or "",
             "is_global": bool(skill.is_global),
+            "assets": assets,
         }, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": f"Failed to view skill: {e}"}, ensure_ascii=False)

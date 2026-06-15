@@ -2,7 +2,8 @@
 
 The model explicitly calls this tool to create or update its task checklist.
 State is stored per-session in-memory. SSE plan events are emitted by
-diffing old vs new todos on each call.
+diffing old vs new todos on each call. State is also synced to the DB
+for frontend persistence and context_loader consumption.
 """
 
 from __future__ import annotations
@@ -63,7 +64,7 @@ def _todos_to_sse_steps(todos: list[dict]) -> list[dict]:
             "content": t["content"],
             "status": t["status"],
             "level": t.get("level", 1),
-            "activeForm": t.get("activeForm", ""),
+            "activeForm": t.get("activeForm") or "",
         }
         for t in todos
     ]
@@ -259,7 +260,7 @@ async def execute(args_str: str, employee_id: int) -> str:
 
 
 async def execute_with_session(args_str: str, employee_id: int, session_id: str) -> str:
-    """Execute a TodoWrite call: validate, update in-memory state, emit SSE events."""
+    """Execute a TodoWrite call: validate, update in-memory state, emit SSE events, sync to DB."""
     try:
         args = json.loads(args_str)
     except json.JSONDecodeError as e:
@@ -294,8 +295,39 @@ async def execute_with_session(args_str: str, employee_id: int, session_id: str)
     except Exception as e:
         log.warning("[%s] TodoWrite SSE emit failed: %s", session_id[:8], e)
 
+    # Sync to DB for frontend task list page and context_loader
+    try:
+        await _sync_to_db(session_id, employee_id, new_todos)
+    except Exception as e:
+        log.warning("[%s] TodoWrite DB sync failed: %s", session_id[:8], e)
+
     return (
-        "Todos have been modified successfully. "
+        "Todos have been successfully. "
         "Ensure that you continue to use the todo list to track your progress. "
-        "Please proceed with the current tasks if applicable."
+        "Please proceed with the current tasks with the current tasks with applicable."
     )
+
+
+async def _sync_to_db(session_id: str, employee_id: int, todos: list[dict]) -> None:
+    """Sync in-memory todos to the database for frontend persistence and context_loader."""
+    from app.dao.todo_dao import TodoDAO
+    from app.db.database import get_session_factory
+
+    session_factory = get_session_factory()
+    dao = TodoDAO(session_factory, employee_id)
+
+    # Soft-delete existing todos for this session
+    existing = await dao.list_todos(session_id=session_id)
+    for t in existing:
+        await dao.soft_delete(t.id)
+
+    # Create new todos matching in-memory state
+    for i, t in enumerate(todos):
+        await dao.create(
+            title=t["content"],
+            description=t.get("activeForm"),
+            priority=0,
+            session_id=session_id,
+            sort_order=i,
+            status=t["status"],
+        )

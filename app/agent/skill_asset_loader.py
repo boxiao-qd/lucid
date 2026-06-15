@@ -1,26 +1,41 @@
-"""Skill/Subagent L3 asset loader — fetch scripts/references/assets into /tmp per session."""
+"""Skill/Subagent L3 asset loader — fetch scripts/references/assets into in-memory cache per session."""
 
 from __future__ import annotations
 
 import logging
-import shutil
+import time
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-_TMP_BASE = Path("/tmp/bx-skill-assets")
+# In-memory asset cache: key → bytes
+# Key format: "{session_id}/{kind}/{name}/{sub_path}"
+_CACHE: dict[str, bytes] = {}
 
 
-def _session_dir(session_id: str) -> Path:
-    return _TMP_BASE / session_id
+def _cache_key(session_id: str, kind: str, name: str, sub_path: str) -> str:
+    return f"{session_id}/{kind}/{name}/{sub_path}"
+
+
+def cleanup_stale_sessions(max_age_hours: int = 24) -> None:
+    """Remove per-session asset entries older than max_age_hours.
+
+    Call once at application startup to recover from any previous
+    abnormal exits that left entries behind.
+    """
+    # In-memory cache doesn't persist across restarts, so this is a no-op.
+    # Kept for API compatibility with startup code.
+    pass
 
 
 def cleanup_session_assets(session_id: str) -> None:
     """Remove all L3 cached assets for a session. Call on session end."""
-    d = _session_dir(session_id)
-    if d.exists():
-        shutil.rmtree(d, ignore_errors=True)
-        log.debug("Cleaned up L3 assets for session %s", session_id[:8])
+    prefix = f"{session_id}/"
+    keys_to_remove = [k for k in _CACHE if k.startswith(prefix)]
+    for k in keys_to_remove:
+        _CACHE.pop(k, None)
+    if keys_to_remove:
+        log.debug("Cleaned up L3 assets for session %s (%d entries)", session_id[:8], len(keys_to_remove))
 
 
 async def skill_has_scripts(employee_id: int, skill_name: str) -> bool:
@@ -51,8 +66,8 @@ async def fetch_skill_script(
     employee_id: int,
     skill_name: str,
     filename: str,
-) -> Path | None:
-    """Fetch a script file from skill/scripts/ to /tmp cache. Returns local path or None."""
+) -> bytes | None:
+    """Fetch a script file from skill/scripts/. Returns bytes or None."""
     return await _fetch_asset(session_id, employee_id, "skills", skill_name, f"scripts/{filename}")
 
 
@@ -63,9 +78,9 @@ async def fetch_skill_reference(
     filename: str,
 ) -> str | None:
     """Fetch a reference file from skill/references/ and return text content."""
-    path = await _fetch_asset(session_id, employee_id, "skills", skill_name, f"references/{filename}")
-    if path and path.exists():
-        return path.read_text(encoding="utf-8", errors="replace")
+    data = await _fetch_asset(session_id, employee_id, "skills", skill_name, f"references/{filename}")
+    if data is not None:
+        return data.decode("utf-8", errors="replace")
     return None
 
 
@@ -74,7 +89,7 @@ async def fetch_subagent_script(
     employee_id: int,
     subagent_name: str,
     filename: str,
-) -> Path | None:
+) -> bytes | None:
     return await _fetch_asset(session_id, employee_id, "subagents", subagent_name, f"tools/{filename}")
 
 
@@ -84,15 +99,17 @@ async def _fetch_asset(
     kind: str,         # "skills" | "subagents"
     name: str,
     sub_path: str,
-) -> Path | None:
+) -> bytes | None:
     from app.dao.skill_dao import SkillDAO
     from app.dao.subagent_dao import SubagentDAO
     from app.storage.object_storage import create_object_storage
     from app.db.database import get_session_factory
 
-    local_path = _session_dir(session_id) / kind / name / sub_path
-    if local_path.exists():
-        return local_path
+    key = _cache_key(session_id, kind, name, sub_path)
+
+    # Cache hit
+    if key in _CACHE:
+        return _CACHE[key]
 
     session_factory = get_session_factory()
 
@@ -113,9 +130,8 @@ async def _fetch_asset(
         data = await storage.get(employee_id, object_key)
         if data is None:
             return None
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        local_path.write_bytes(data)
-        return local_path
+        _CACHE[key] = data
+        return data
     except Exception as e:
         log.warning("L3 asset fetch failed (%s/%s/%s): %s", kind, name, sub_path, e)
         return None

@@ -6,6 +6,9 @@ import logging
 import re
 import time
 
+import httpx
+import openai
+
 from app.dao.session_dao import SessionDAO
 from app.dao.message_dao import MessageDAO
 from app.api.v1.stream import push_event
@@ -119,9 +122,14 @@ class AgentService:
         log.info("[%s] Agent循环启动 — model=%s session_type=%s 工具数=%d 历史消息=%d",
                  sid, model, session_type, len(tools) if tools else 0, len(history))
 
+        # Clear stale TodoWrite state from previous agent loops in this session
+        from app.agent.tools.todo_write import clear_session_todos
+        clear_session_todos(session_id)
+
         assistant_id = str(time.time_ns())
         loop_start = time.perf_counter()
         reasoning_reprompt_done = False
+        all_todos_done = False
         execution_count = 0
         max_iterations = settings.max_plan_steps
 
@@ -230,117 +238,141 @@ class AgentService:
                 tool_calls_accum = []
                 total_tokens = 0
 
-                async for chunk in stream:
-                    if not chunk.choices:
+                try:
+                    async for chunk in stream:
+                        if not chunk.choices:
+                            if chunk.usage:
+                                total_tokens = chunk.usage.total_tokens
+                            continue
+                        delta = chunk.choices[0].delta
+
+                        if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                            reasoning_content += delta.reasoning_content
+                            if not thinking_started:
+                                push_event(session_id, SSEEventType.thinking_start, {
+                                    "message_id": assistant_id, "delta": "",
+                                })
+                                thinking_started = True
+                                log.info("[%s] 第%d轮 — 开始思考（reasoning_content字段）",
+                                         sid, iteration)
+                            push_event(session_id, SSEEventType.thinking_delta, {
+                                "message_id": assistant_id,
+                                "delta": delta.reasoning_content,
+                            })
+
+                        if delta.content:
+                            text = delta.content
+                            for char in text:
+                                think_buffer += char
+                                if not in_think_tag:
+                                    if _THINK_START_RE.search(think_buffer):
+                                        in_think_tag = True
+                                        if not thinking_started:
+                                            push_event(session_id, SSEEventType.thinking_start, {
+                                                "message_id": assistant_id, "delta": "",
+                                            })
+                                            thinking_started = True
+                                            log.info("[%s] 第%d轮 — 开始思考（<think>标签）",
+                                                     sid, iteration)
+                                        before_tag = _THINK_START_RE.sub("", think_buffer, count=1)
+                                        think_buffer = ""
+                                        if before_tag.strip():
+                                            current_content += before_tag
+                                            push_event(session_id, SSEEventType.text_delta, {
+                                                "message_id": assistant_id, "delta": before_tag,
+                                            })
+                                    elif len(think_buffer) > 20:
+                                        current_content += think_buffer
+                                        push_event(session_id, SSEEventType.text_delta, {
+                                            "message_id": assistant_id, "delta": think_buffer,
+                                        })
+                                        think_buffer = ""
+                                else:
+                                    if _THINK_END_RE.search(think_buffer):
+                                        in_think_tag = False
+                                        think_content = _THINK_END_RE.sub("", think_buffer, count=1)
+                                        reasoning_content += think_content
+                                        push_event(session_id, SSEEventType.thinking_delta, {
+                                            "message_id": assistant_id, "delta": think_content,
+                                        })
+                                        push_event(session_id, SSEEventType.thinking_end, {
+                                            "message_id": assistant_id,
+                                        })
+                                        thinking_ended = True
+                                        log.info("[%s] 第%d轮 — 思考结束（<think>标签）— 思考内容长度=%d",
+                                                 sid, iteration, len(reasoning_content))
+                                        think_buffer = ""
+                                    elif len(think_buffer) > 5:
+                                        # Safe-flush: keep any trailing prefix of </think> to avoid splitting the tag
+                                        think_end_tag = "</think>"
+                                        keep = ""
+                                        for i in range(len(think_end_tag) - 1, 0, -1):
+                                            if think_buffer.endswith(think_end_tag[:i]):
+                                                keep = think_buffer[-i:]
+                                                break
+                                        flush_part = think_buffer[:-len(keep)] if keep else think_buffer
+                                        if flush_part:
+                                            reasoning_content += flush_part
+                                            push_event(session_id, SSEEventType.thinking_delta, {
+                                                "message_id": assistant_id, "delta": flush_part,
+                                            })
+                                        think_buffer = keep
+
+                            if think_buffer and not in_think_tag:
+                                current_content += think_buffer
+                                push_event(session_id, SSEEventType.text_delta, {
+                                    "message_id": assistant_id, "delta": think_buffer,
+                                })
+                                think_buffer = ""
+
+                        if delta.tool_calls:
+                            for tc_delta in delta.tool_calls:
+                                idx = tc_delta.index
+                                while len(tool_calls_accum) <= idx:
+                                    tool_calls_accum.append({"id": "", "name": "", "arguments": ""})
+                                if tc_delta.id:
+                                    tool_calls_accum[idx]["id"] = tc_delta.id
+                                    push_event(session_id, SSEEventType.tool_call_start, {
+                                        "tool_call_id": tc_delta.id,
+                                        "tool_name": tc_delta.function.name if tc_delta.function and tc_delta.function.name else tool_calls_accum[idx]["name"],
+                                        "args_preview": "",
+                                    })
+                                if tc_delta.function:
+                                    if tc_delta.function.name:
+                                        tool_calls_accum[idx]["name"] = tc_delta.function.name
+                                    if tc_delta.function.arguments:
+                                        tool_calls_accum[idx]["arguments"] += tc_delta.function.arguments
+                                        push_event(session_id, SSEEventType.tool_call_delta, {
+                                            "tool_call_id": tool_calls_accum[idx]["id"],
+                                            "args_delta": tc_delta.function.arguments,
+                                            "partial_args": tool_calls_accum[idx]["arguments"],
+                                        })
+
                         if chunk.usage:
                             total_tokens = chunk.usage.total_tokens
-                        continue
-                    delta = chunk.choices[0].delta
 
-                    if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-                        reasoning_content += delta.reasoning_content
-                        if not thinking_started:
-                            push_event(session_id, SSEEventType.thinking_start, {
-                                "message_id": assistant_id, "delta": "",
-                            })
-                            thinking_started = True
-                            log.info("[%s] 第%d轮 — 开始思考（reasoning_content字段）",
-                                     sid, iteration)
-                        push_event(session_id, SSEEventType.thinking_delta, {
-                            "message_id": assistant_id,
-                            "delta": delta.reasoning_content,
-                        })
-
-                    if delta.content:
-                        text = delta.content
-                        for char in text:
-                            think_buffer += char
-                            if not in_think_tag:
-                                if _THINK_START_RE.search(think_buffer):
-                                    in_think_tag = True
-                                    if not thinking_started:
-                                        push_event(session_id, SSEEventType.thinking_start, {
-                                            "message_id": assistant_id, "delta": "",
-                                        })
-                                        thinking_started = True
-                                        log.info("[%s] 第%d轮 — 开始思考（<think>标签）",
-                                                 sid, iteration)
-                                    before_tag = _THINK_START_RE.sub("", think_buffer, count=1)
-                                    think_buffer = ""
-                                    if before_tag.strip():
-                                        current_content += before_tag
-                                        push_event(session_id, SSEEventType.text_delta, {
-                                            "message_id": assistant_id, "delta": before_tag,
-                                        })
-                                elif len(think_buffer) > 20:
-                                    current_content += think_buffer
-                                    push_event(session_id, SSEEventType.text_delta, {
-                                        "message_id": assistant_id, "delta": think_buffer,
-                                    })
-                                    think_buffer = ""
-                            else:
-                                if _THINK_END_RE.search(think_buffer):
-                                    in_think_tag = False
-                                    think_content = _THINK_END_RE.sub("", think_buffer, count=1)
-                                    reasoning_content += think_content
-                                    push_event(session_id, SSEEventType.thinking_delta, {
-                                        "message_id": assistant_id, "delta": think_content,
-                                    })
-                                    push_event(session_id, SSEEventType.thinking_end, {
-                                        "message_id": assistant_id,
-                                    })
-                                    thinking_ended = True
-                                    log.info("[%s] 第%d轮 — 思考结束（<think>标签）— 思考内容长度=%d",
-                                             sid, iteration, len(reasoning_content))
-                                    think_buffer = ""
-                                elif len(think_buffer) > 5:
-                                    # Safe-flush: keep any trailing prefix of </think> to avoid splitting the tag
-                                    think_end_tag = "</think>"
-                                    keep = ""
-                                    for i in range(len(think_end_tag) - 1, 0, -1):
-                                        if think_buffer.endswith(think_end_tag[:i]):
-                                            keep = think_buffer[-i:]
-                                            break
-                                    flush_part = think_buffer[:-len(keep)] if keep else think_buffer
-                                    if flush_part:
-                                        reasoning_content += flush_part
-                                        push_event(session_id, SSEEventType.thinking_delta, {
-                                            "message_id": assistant_id, "delta": flush_part,
-                                        })
-                                    think_buffer = keep
-
-                        if think_buffer and not in_think_tag:
-                            current_content += think_buffer
-                            push_event(session_id, SSEEventType.text_delta, {
-                                "message_id": assistant_id, "delta": think_buffer,
-                            })
-                            think_buffer = ""
-
-                    if delta.tool_calls:
-                        for tc_delta in delta.tool_calls:
-                            idx = tc_delta.index
-                            while len(tool_calls_accum) <= idx:
-                                tool_calls_accum.append({"id": "", "name": "", "arguments": ""})
-                            if tc_delta.id:
-                                tool_calls_accum[idx]["id"] = tc_delta.id
-                                push_event(session_id, SSEEventType.tool_call_start, {
-                                    "tool_call_id": tc_delta.id,
-                                    "tool_name": tc_delta.function.name if tc_delta.function and tc_delta.function.name else tool_calls_accum[idx]["name"],
-                                    "args_preview": "",
-                                })
-                            if tc_delta.function:
-                                if tc_delta.function.name:
-                                    tool_calls_accum[idx]["name"] = tc_delta.function.name
-                                if tc_delta.function.arguments:
-                                    tool_calls_accum[idx]["arguments"] += tc_delta.function.arguments
-                                    push_event(session_id, SSEEventType.tool_call_delta, {
-                                        "tool_call_id": tool_calls_accum[idx]["id"],
-                                        "args_delta": tc_delta.function.arguments,
-                                        "partial_args": tool_calls_accum[idx]["arguments"],
-                                    })
-
-                    if chunk.usage:
-                        total_tokens = chunk.usage.total_tokens
+                except httpx.ReadTimeout:
+                    friendly_msg = "网络连接超时，模型响应时间较长。请稍后重试，或尝试简化问题后再次提问。"
+                    log.warning("[%s] 第%d轮 — LLM流式响应超时，给用户友好提示", sid, iteration)
+                    push_event(session_id, SSEEventType.text_delta, {
+                        "message_id": assistant_id, "delta": friendly_msg,
+                    })
+                    # Persist the timeout message as an normal assistant message
+                    final_msg = await msg_dao.create(
+                        session_id=session_id,
+                        role="assistant",
+                        content=friendly_msg,
+                        token_count=0,
+                    )
+                    push_event(session_id, SSEEventType.message_done, {
+                        "message_id": final_msg.id,
+                        "streaming_message_id": assistant_id,
+                        "content": friendly_msg,
+                        "role": "assistant",
+                        "token_count": 0,
+                        "stop_reason": "read_timeout",
+                    })
+                    break
 
                 # Flush remaining think buffer
                 if think_buffer and in_think_tag:
@@ -436,11 +468,51 @@ class AgentService:
                     # When all todos are completed, prompt LLM to produce final answer
                     todos = get_session_todos(session_id)
                     if todos and all(t.get("status") == "completed" for t in todos):
-                        log.info("[%s] 第%d轮 — 所有任务已完成，提示LLM给出最终回答", sid, iteration)
-                        llm_messages.append({
-                            "role": "user",
-                            "content": "所有任务已完成，请直接给出最终的文字回答，不要再调用任何工具。",
-                        })
+                        if not all_todos_done:
+                            all_todos_done = True
+                            log.info("[%s] 第%d轮 — 所有任务已完成，追加提示让LLM给出最终回答", sid, iteration)
+                            llm_messages.append({
+                                "role": "user",
+                                "content": "所有任务已完成，请直接给出最终的文字回答，不要调用任何工具。",
+                            })
+                        else:
+                            # LLM still called tools after being told to stop — try re-prompt or force final answer
+                            log.info("[%s] 第%d轮 — 所有任务已完成但LLM仍调用工具", sid, iteration)
+                            if not current_content.strip() and reasoning_content.strip() and not reasoning_reprompt_done:
+                                log.info("[%s] 第%d轮 — force_break: 文本为空但有思考，补充提示获取最终回答", sid, iteration)
+                                reasoning_reprompt_done = True
+                                reasoning_ctx = reasoning_content[:800]
+                                llm_messages.append({"role": "assistant", "content": f"<think>{reasoning_ctx}</think>"})
+                                llm_messages.append({"role": "user", "content": "所有任务已完成，请基于以上思考直接给出你的最终文字回答，不要重复思考过程，不要调用任何工具。"})
+                                continue
+                            # Re-prompt failed or no reasoning — force break with best available content
+                            log.info("[%s] 第%d轮 — 所有任务已完成但LLM仍调用工具，强制终止循环", sid, iteration)
+                            final_text = current_content.strip()
+                            if not final_text and reasoning_content.strip():
+                                final_text = re.sub(r'</?think(?:ing)?>', '', reasoning_content, flags=re.IGNORECASE).strip()
+                            if not final_text:
+                                final_text = "（所有任务已完成。）"
+                            push_event(session_id, SSEEventType.text_delta, {
+                                "message_id": assistant_id, "delta": final_text,
+                            })
+                            final_msg = await msg_dao.create(
+                                session_id=session_id,
+                                role="assistant",
+                                content=final_text,
+                                reasoning_content=reasoning_content.strip() or None,
+                                token_count=total_tokens,
+                            )
+                            push_event(session_id, SSEEventType.message_done, {
+                                "message_id": final_msg.id,
+                                "streaming_message_id": assistant_id,
+                                "content": final_text,
+                                "role": "assistant",
+                                "token_count": total_tokens,
+                                "stop_reason": "force_break",
+                            })
+                            log.info("[%s] force_break最终回答已保存 — msg_id=%s streaming_id=%s 文本长度=%d",
+                                     sid, final_msg.id, assistant_id, len(final_text))
+                            break
                     # Check max executions — the counter was already incremented above
                     if execution_count >= max_iterations:
                         log.warning("[%s] 达到最大执行次数 %d，强制终止", sid, max_iterations)
@@ -567,6 +639,32 @@ class AgentService:
                 "message": str(exc),
                 "recoverable": False,
             })
+            _is_content_blocked = isinstance(exc, openai.APIError)
+            _err_text = (
+                "（模型内容被安全策略拦截，请换个问法后重试。）"
+                if _is_content_blocked
+                else "（服务处理异常，请稍后重试。）"
+            )
+            try:
+                _err_msg = await msg_dao.create(
+                    session_id=session_id,
+                    role="assistant",
+                    content=_err_text,
+                    token_count=0,
+                )
+                push_event(session_id, SSEEventType.text_delta, {
+                    "message_id": assistant_id, "delta": _err_text,
+                })
+                push_event(session_id, SSEEventType.message_done, {
+                    "message_id": _err_msg.id,
+                    "streaming_message_id": assistant_id,
+                    "content": _err_text,
+                    "role": "assistant",
+                    "token_count": 0,
+                    "stop_reason": "api_error" if _is_content_blocked else "internal_error",
+                })
+            except Exception as _save_exc:
+                log.error("[%s] 兜底错误消息保存失败: %s", sid, _save_exc)
 
         return user_msg_id
 
@@ -897,7 +995,6 @@ class AgentService:
             log.warning("[%s] 工具 '%s' 未找到 — 无对应执行器", session_id[:8], tool_name)
             return json.dumps({"error": f"Tool '{tool_name}' not found"}, ensure_ascii=False)
 
-        
         if tool_name == "spawn_subagent":
             from app.agent.tools.spawn_subagent import execute_with_session
             return await execute_with_session(args_str, self._employee_id, session_id)
@@ -910,4 +1007,10 @@ class AgentService:
             from app.agent.tools.create_artifact import execute_with_session as ca_execute
             return await ca_execute(args_str, self._employee_id, session_id)
 
-        return await executor(args_str, self._employee_id)
+        if tool_name == "skill_asset_pull":
+            from app.agent.tools.skill_asset_pull import execute_with_session
+            return await execute_with_session(args_str, self._employee_id, session_id)
+
+        result = await executor(args_str, self._employee_id)
+
+        return result
