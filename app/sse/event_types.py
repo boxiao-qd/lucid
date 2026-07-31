@@ -28,6 +28,10 @@ class SSEEventType(str, Enum):
     plan_step_failed = "plan_step_failed"
     plan_adjusted = "plan_adjusted"
     plan_complete = "plan_complete"
+    # Task lifecycle management (cancel/queue/steer)
+    task_cancelled = "task_cancelled"
+    task_queued = "task_queued"
+    task_steered = "task_steered"
 
 
 class SSEEventEnvelope(BaseModel):
@@ -157,3 +161,20 @@ class PlanAdjustedData(BaseModel):
 class PlanCompleteData(BaseModel):
     plan_id: str
     summary: str
+
+
+# ── Task lifecycle data schemas ─────────────────────────────────────────
+
+class TaskCancelledData(BaseModel):
+    run_id: str
+    reason: str = "user_requested"
+
+
+class TaskQueuedData(BaseModel):
+    queue_depth: int
+    mode: str
+
+
+class TaskSteeredData(BaseModel):
+    run_id: str
+    content_preview: str

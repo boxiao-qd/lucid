@@ -21,7 +21,10 @@ export type SSEEventType =
   | "plan_step_complete"
   | "plan_step_failed"
   | "plan_adjusted"
-  | "plan_complete";
+  | "plan_complete"
+  | "task_cancelled"
+  | "task_queued"
+  | "task_steered";
 
 export interface SSEEventEnvelope {
   type: SSEEventType;
@@ -55,6 +58,11 @@ export interface PlanStepFailedData { [key: string]: unknown; plan_id: string; s
 export interface PlanAdjustedData { [key: string]: unknown; plan_id: string; reason: string; steps: PlanStepData[]; max_steps: number }
 export interface PlanCompleteData { [key: string]: unknown; plan_id: string; summary: string }
 
+// Task lifecycle (cancel / queue / steer)
+export interface TaskCancelledData { [key: string]: unknown; run_id: string; reason: string }
+export interface TaskQueuedData { [key: string]: unknown; queue_depth: number; mode: string }
+export interface TaskSteeredData { [key: string]: unknown; run_id: string; content_preview: string }
+
 export type SSEEventData =
   | TextDeltaData
   | ThinkingStartData
@@ -76,4 +84,7 @@ export type SSEEventData =
   | PlanStepCompleteData
   | PlanStepFailedData
   | PlanAdjustedData
-  | PlanCompleteData;
+  | PlanCompleteData
+  | TaskCancelledData
+  | TaskQueuedData
+  | TaskSteeredData;

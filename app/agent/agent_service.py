@@ -17,9 +17,14 @@ from app.db.database import get_session_factory
 from app.agent.llm_router import LLMRouter
 from app.agent.tools import get_tool_definitions, get_tool_executor
 from app.agent.context_loader import ContextLoader
-from app.agent.memory_distiller import MemoryDistiller
-from app.agent.context_compressor import compress_if_needed
+from app.agent.context_compressor import compress_if_needed, reset_circuit_breaker
+from app.agent.llm_router import ContextOverflowError
 from app.agent.tools.todo_write import get_session_todos, todo_summary_for_llm, force_complete_todos
+from app.agent.task_manager import (
+    register_run, unregister_run, cancel_run, get_active_run,
+    enqueue_task, dequeue_task, has_queued_tasks, is_cancel_trigger,
+    get_queue,
+)
 from app.config import settings
 
 log = logging.getLogger(__name__)
@@ -64,7 +69,9 @@ _TOOL_RESULT_HARD_RECENT = 1         # keep last N results at full length (hard)
 _TOOL_RESULT_HARD_CHARS = 100        # chars per old result after hard trim
 
 _CHARS_PER_TOKEN = 3.5             # rough estimate for mixed Chinese/HTML
-_TOKEN_GUARD_LIMIT = 160_000       # pre-flight abort threshold (well below 196K model limit)
+
+# Microcompact placeholder — matches Claude Code's "[Old tool result content cleared]"
+_MICROCOMPACT_PLACEHOLDER = "[Old tool result content cleared]"
 
 # Tools safe to execute concurrently — read-only or independent side effects.
 _CONCURRENT_TOOLS = frozenset({
@@ -93,6 +100,9 @@ class AgentService:
 
         session = await session_dao.get_by_id(session_id)
 
+        # Reset circuit breaker on new user message
+        reset_circuit_breaker(session_id)
+
         if user_msg_id is None:
             # Parallel: save user message and load history concurrently
             msg_dao2 = MessageDAO(self._session_factory, self._employee_id)
@@ -107,10 +117,48 @@ class AgentService:
         push_event(session_id, SSEEventType.message_done, {
             "message_id": user_msg_id,
             "role": role,
+            "content": content,
             "token_count": 0,
             "stop_reason": None,
         })
         log.info("[%s] 历史消息已加载 — 上下文共 %d 条", sid, len(history))
+
+        # ── System commands: intercept before agent loop ──
+        if content.startswith("/compact"):
+            return await self._handle_compact_command(
+                session_id, session, content, user_msg_id, sid, msg_dao, session_dao
+            )
+
+        # ── Cancel trigger: if user sends a cancel word while a run is active ──
+        if is_cancel_trigger(content):
+            active = get_active_run(session_id)
+            if active and not active.cancel_event.is_set():
+                cancel_run(session_id)
+                push_event(session_id, SSEEventType.task_cancelled, {
+                    "run_id": active.run_id,
+                    "reason": "user_cancel_trigger",
+                })
+                log.info("[%s] 取消触发词检测 — 已取消活动运行", sid)
+                return user_msg_id
+            # No active run — treat as a normal message (user might just be saying "stop" in conversation)
+
+        # ── Active run guard: if a run is already in progress, enqueue the message ──
+        active = get_active_run(session_id)
+        if active and not active.cancel_event.is_set():
+            entry = enqueue_task(session_id, content, role, mode="followup")
+            queue = get_queue(session_id)
+            push_event(session_id, SSEEventType.task_queued, {
+                "queue_depth": len(queue.items),
+                "mode": entry.mode,
+                "content_preview": content[:100],
+            })
+            log.info("[%s] 活动运行进行中 — 消息已入队（followup）队列深度=%d", sid, len(queue.items))
+            return user_msg_id
+
+        # ── Register this run for cancel/steer coordination ──
+        assistant_id = str(time.time_ns())
+        run_handle = register_run(session_id, assistant_id)
+
         llm_messages = await self._build_llm_messages(session, history)
         base_system_prompt = llm_messages[0]["content"] if llm_messages and llm_messages[0]["role"] == "system" else ""
 
@@ -126,7 +174,6 @@ class AgentService:
         from app.agent.tools.todo_write import clear_session_todos
         clear_session_todos(session_id)
 
-        assistant_id = str(time.time_ns())
         loop_start = time.perf_counter()
         reasoning_reprompt_done = False
         all_todos_done = False
@@ -142,25 +189,57 @@ class AgentService:
         })
 
         try:
+            # Overflow recovery: max retries before giving up
+            overflow_attempts = 0
             for iteration in range(max_iterations):
-                # Proactive context trim — prevents mid-loop context overflow on long tasks
+                # ── Cancel check: stop at safe checkpoint if cancel was requested ──
+                if run_handle.cancel_event.is_set():
+                    log.info("[%s] 第%d轮 — 检测到取消信号，终止循环", sid, iteration)
+                    current_content = "（任务已被取消。）"
+                    push_event(session_id, SSEEventType.text_delta, {
+                        "message_id": assistant_id, "delta": current_content,
+                    })
+                    final_msg = await msg_dao.create(
+                        session_id=session_id,
+                        role="assistant",
+                        content=current_content,
+                        token_count=0,
+                    )
+                    push_event(session_id, SSEEventType.message_done, {
+                        "message_id": final_msg.id,
+                        "streaming_message_id": assistant_id,
+                        "content": current_content,
+                        "role": "assistant",
+                        "token_count": 0,
+                        "stop_reason": "cancelled",
+                    })
+                    break
+
+                # ── Microcompact: clear old tool results before each API call ──
+                if settings.microcompact_enabled:
+                    self._microcompact_tool_results(sid, llm_messages)
+
+                # ── Proactive context trim ──
                 self._trim_context_if_needed(sid, llm_messages)
 
-                # Pre-flight token guard — try compression first, abort only if it doesn't help
+                # ── Proactive pre-API check: compress if near context window limit ──
+                # Uses absolute-offset threshold: contextWindow - maxOutput - buffer
+                # matching Claude Code's approach. More predictable than a percentage.
                 estimated_tokens = int(
                     sum(len(str(m.get("content") or "")) for m in llm_messages) / _CHARS_PER_TOKEN
                 )
-                if estimated_tokens > _TOKEN_GUARD_LIMIT:
-                    log.warning("[%s] 第%d轮 — 上下文过长 (~%d tokens)，尝试压缩后继续",
-                                sid, iteration, estimated_tokens)
+                effective_window = min(settings.context_window_tokens, session.max_tokens or settings.context_window_tokens)
+                proactive_threshold = effective_window - settings.max_output_tokens - settings.auto_compact_buffer_tokens
+                if proactive_threshold > 0 and estimated_tokens > proactive_threshold:
+                    log.warning("[%s] 第%d轮 — 上下文接近上限 (~%d/%d tokens)，主动压缩",
+                                sid, iteration, estimated_tokens, effective_window)
                     try:
                         compressed = await compress_if_needed(self._employee_id, session_id, force=True)
                     except Exception as _ce:
-                        log.warning("[%s] 强制压缩失败: %s", sid, _ce)
+                        log.warning("[%s] 主动压缩失败: %s", sid, _ce)
                         compressed = False
 
                     if compressed:
-                        # Rebuild llm_messages from the compressed DB history and re-trim
                         history, _ = await msg_dao.get_history(session_id, limit=settings.history_load_limit)
                         llm_messages = await self._build_llm_messages(session, history)
                         base_system_prompt = llm_messages[0]["content"] if llm_messages and llm_messages[0]["role"] == "system" else ""
@@ -170,7 +249,7 @@ class AgentService:
                         )
                         log.info("[%s] 压缩后重建消息: 估算=%d tokens，继续任务", sid, estimated_tokens)
 
-                    if estimated_tokens > _TOKEN_GUARD_LIMIT:
+                    if estimated_tokens > proactive_threshold:
                         log.error("[%s] 第%d轮 — 上下文过长 (~%d tokens)，压缩后仍超限，终止循环",
                                   sid, iteration, estimated_tokens)
                         current_content = (
@@ -221,12 +300,42 @@ class AgentService:
                             llm_messages[0]["content"] = base_system_prompt + "\n\n" + todo_ctx
                         else:
                             llm_messages[0]["content"] = base_system_prompt
-                stream = await self._llm_router.chat(
-                    model=model,
-                    messages=llm_messages,
-                    tools=effective_tool_defs,
-                    stream=True,
-                )
+
+                # ── LLM call with reactive overflow recovery ──
+                # If the LLM returns a context overflow error, compress and retry
+                # instead of failing immediately (matching OpenClaw's approach).
+                try:
+                    stream = await self._llm_router.chat(
+                        model=model,
+                        messages=llm_messages,
+                        tools=effective_tool_defs,
+                        stream=True,
+                    )
+                except ContextOverflowError:
+                    overflow_attempts += 1
+                    if overflow_attempts > settings.max_overflow_retries:
+                        log.error("[%s] 第%d轮 — 上下文溢出恢复失败（已达最大重试次数 %d），终止",
+                                  sid, iteration, settings.max_overflow_retries)
+                        raise
+                    log.warning("[%s] 第%d轮 — 上下文溢出，触发压缩恢复（第%d/%d次）",
+                                sid, iteration, overflow_attempts, settings.max_overflow_retries)
+                    try:
+                        compressed = await compress_if_needed(self._employee_id, session_id, force=True)
+                    except Exception as _ce:
+                        log.warning("[%s] 溢出恢复压缩失败: %s", sid, _ce)
+                        compressed = False
+
+                    if compressed:
+                        history, _ = await msg_dao.get_history(session_id, limit=settings.history_load_limit)
+                        llm_messages = await self._build_llm_messages(session, history)
+                        base_system_prompt = llm_messages[0]["content"] if llm_messages and llm_messages[0]["role"] == "system" else ""
+                        self._trim_context_if_needed(sid, llm_messages)
+                        log.info("[%s] 溢出恢复：压缩成功，重试 LLM 调用", sid)
+                        continue  # retry the iteration
+                    else:
+                        log.warning("[%s] 溢出恢复：压缩失败，继续尝试", sid)
+                        continue  # still try again (may hit circuit breaker)
+
                 log.info("[%s] 第%d轮 — 流式响应已建立", sid, iteration)
 
                 current_content = ""
@@ -237,9 +346,63 @@ class AgentService:
                 think_buffer = ""
                 tool_calls_accum = []
                 total_tokens = 0
+                steered = False
 
                 try:
+                    run_handle.is_streaming = True
                     async for chunk in stream:
+                        # ── Cancel check during streaming ──
+                        if run_handle.cancel_event.is_set():
+                            log.info("[%s] 第%d轮 — 流式传输中检测到取消信号", sid, iteration)
+                            # Close the underlying stream to abort the LLM call
+                            if hasattr(stream, "close"):
+                                try:
+                                    await stream.close()
+                                except Exception:
+                                    pass
+                            break
+
+                        # ── Steer check during streaming ──
+                        try:
+                            steer_text = run_handle.steer_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            steer_text = None
+                        if steer_text is not None:
+                            log.info("[%s] 第%d轮 — 流式传输中收到 steer 指令", sid, iteration)
+                            if hasattr(stream, "close"):
+                                try:
+                                    await stream.close()
+                                except Exception:
+                                    pass
+                            # Discard partially-accumulated tool calls — their
+                            # arguments are truncated mid-stream and would fail
+                            # JSON parsing if executed (e.g. create_artifact).
+                            # The LLM will re-emit them (adjusted for the steer)
+                            # in the next iteration.
+                            if tool_calls_accum:
+                                log.info("[%s] 第%d轮 — steer 丢弃 %d 个未完成的工具调用",
+                                         sid, iteration, len(tool_calls_accum))
+                                tool_calls_accum = []
+                            # Inject steer text as user message and re-prompt.
+                            # Wording follows OpenClaw's steer semantics: the user is
+                            # supplementing the active run, not forcing a replan —
+                            # the LLM should judge whether to adjust the plan.
+                            llm_messages.append({
+                                "role": "user",
+                                "content": (
+                                    f"[用户补充信息] {steer_text}\n"
+                                    "（请结合当前任务和此信息，判断是否需要调整当前 plan 和执行。）"
+                                ),
+                            })
+                            push_event(session_id, SSEEventType.task_steered, {
+                                "run_id": assistant_id,
+                                "content_preview": steer_text[:100],
+                            })
+                            run_handle.is_streaming = False
+                            steered = True
+                            # Break out of streaming; the outer loop will re-call LLM
+                            break
+
                         if not chunk.choices:
                             if chunk.usage:
                                 total_tokens = chunk.usage.total_tokens
@@ -352,6 +515,7 @@ class AgentService:
                             total_tokens = chunk.usage.total_tokens
 
                 except httpx.ReadTimeout:
+                    run_handle.is_streaming = False
                     friendly_msg = "网络连接超时，模型响应时间较长。请稍后重试，或尝试简化问题后再次提问。"
                     log.warning("[%s] 第%d轮 — LLM流式响应超时，给用户友好提示", sid, iteration)
                     push_event(session_id, SSEEventType.text_delta, {
@@ -373,6 +537,41 @@ class AgentService:
                         "stop_reason": "read_timeout",
                     })
                     break
+
+                # ── Post-streaming: handle cancel/steer break-out ──
+                run_handle.is_streaming = False
+
+                # If cancelled during streaming, break out of the iteration loop
+                if run_handle.cancel_event.is_set():
+                    log.info("[%s] 第%d轮 — 流已取消，终止循环", sid, iteration)
+                    if not current_content.strip():
+                        current_content = "（任务已被取消。）"
+                        push_event(session_id, SSEEventType.text_delta, {
+                            "message_id": assistant_id, "delta": current_content,
+                        })
+                    final_msg = await msg_dao.create(
+                        session_id=session_id,
+                        role="assistant",
+                        content=current_content.strip() or "（任务已被取消。）",
+                        reasoning_content=reasoning_content.strip() or None,
+                        token_count=total_tokens,
+                    )
+                    push_event(session_id, SSEEventType.message_done, {
+                        "message_id": final_msg.id,
+                        "streaming_message_id": assistant_id,
+                        "content": current_content.strip() or "（任务已被取消。）",
+                        "role": "assistant",
+                        "token_count": total_tokens,
+                        "stop_reason": "cancelled",
+                    })
+                    break
+
+                # If steered during streaming, re-prompt LLM with the injected
+                # steer text. Partial tool calls were already discarded in the
+                # steer block, so this is safe regardless of what was streamed.
+                if steered:
+                    log.info("[%s] 第%d轮 — steer 后重新提示 LLM", sid, iteration)
+                    continue
 
                 # Flush remaining think buffer
                 if think_buffer and in_think_tag:
@@ -576,23 +775,39 @@ class AgentService:
                 })
                 log.info("[%s] message_done事件已推送 — msg_id=%s streaming_id=%s", sid, final_msg.id, assistant_id)
 
-                # session end: per-turn distillation → short_term, then consolidate → long_term
-                try:
-                    distiller = MemoryDistiller(self._employee_id, self._session_factory)
-                    conversation_msgs = [
-                        {"role": m.role, "content": m.content or ""}
-                        for m in history if m.role in ("user", "assistant")
-                    ]
-                    # distill conversation → short_term memory
-                    result = await distiller.distill(self._employee_id, session_id, conversation_msgs, memory_type="short_term")
-                    log.info(f"[{sid}] 对话结束蒸馏完成: 提取 {result.distilled_count} 条短期记忆")
-                    # consolidate short_term → long_term
-                    promoted, discarded = await distiller.consolidate(self._employee_id)
-                    log.info(f"[{sid}] 记忆整合完成: {promoted} 条晋升为长期记忆，{discarded} 条已丢弃")
-                except Exception as e:
-                    log.warning(f"[{sid}] 对话结束蒸馏失败: {e}")
+                # Fire-and-forget: per-turn incremental distillation → short_term
+                # Ensures short sessions that never trigger compression still get
+                # their memories extracted (matching Claude Code's extractMemories).
+                if settings.memory_distill_enabled:
+                    try:
+                        from app.agent.memory_distiller import (
+                            get_last_distilled_message_id, run_distillation_task,
+                        )
+                        last_distilled = get_last_distilled_message_id(session_id)
+                        new_msgs: list[dict] = []
+                        found_last = last_distilled is None
+                        for m in history:
+                            if m.role not in ("user", "assistant"):
+                                continue
+                            if not found_last:
+                                if m.id == last_distilled:
+                                    found_last = True
+                                continue
+                            new_msgs.append({"role": m.role, "content": m.content or ""})
 
-                # context compression: triggers pre-compress hook if session token_count > max_tokens
+                        if new_msgs and len(new_msgs) >= settings.memory_distill_min_messages:
+                            last_msg_id = history[-1].id if history else None
+                            if last_msg_id:
+                                asyncio.create_task(
+                                    run_distillation_task(
+                                        self._employee_id, session_id, new_msgs,
+                                        self._session_factory, last_msg_id,
+                                    )
+                                )
+                    except Exception as e:
+                        log.warning("[%s] Per-turn distillation launch failed: %s", sid, e)
+
+                # context compression: triggers pre-compress memory flush + distillation if session token_count > max_tokens
                 try:
                     compressed = await compress_if_needed(self._employee_id, session_id)
                     if compressed:
@@ -632,6 +847,15 @@ class AgentService:
                 })
                 log.info("[%s] message_done事件已推送（最大轮次）— msg_id=%s", sid, final_msg.id)
 
+            # ── Post-run: drain queued tasks ──
+            # Unregister THIS run before draining so the recursive
+            # process_message call in the drain doesn't trip the active-run
+            # guard (line ~145) and re-enqueue the task — that would loop
+            # forever, flooding the frontend with task_queued events.
+            # The finally block below is a no-op pop when this ran first.
+            unregister_run(session_id, assistant_id)
+            await self._drain_queued_tasks(session_id, session, msg_dao, session_dao)
+
         except Exception as exc:
             log.error("[%s] Agent循环异常: %s", sid, exc, exc_info=True)
             push_event(session_id, SSEEventType.error, {
@@ -666,7 +890,169 @@ class AgentService:
             except Exception as _save_exc:
                 log.error("[%s] 兜底错误消息保存失败: %s", sid, _save_exc)
 
+        finally:
+            # Always unregister the run, even on errors
+            unregister_run(session_id, assistant_id)
+
         return user_msg_id
+
+    async def _handle_compact_command(
+        self, session_id: str, session, content: str, user_msg_id: str,
+        sid: str, msg_dao, session_dao,
+    ) -> str:
+        """Handle /compact [custom instructions] — manual context compression.
+
+        Triggers compression immediately without going through the agent loop.
+        Returns token counts before/after so the user can see the result.
+        """
+        # Extract optional custom instructions
+        custom_instructions = content[len("/compact"):].strip()
+
+        # Get pre-compression token state
+        session_before = await session_dao.get_by_id(session_id)
+        tokens_before = session_before.token_count if session_before else 0
+        max_tokens = session_before.max_tokens if session_before else 0
+        tokens_after = tokens_before
+
+        assistant_id = str(time.time_ns())
+        push_event(session_id, SSEEventType.stream_start, {"message_id": assistant_id})
+
+        if tokens_before <= 0:
+            result_text = "（当前会话没有需要压缩的上下文。）"
+        else:
+            try:
+                compressed = await compress_if_needed(self._employee_id, session_id, force=True)
+            except Exception as e:
+                log.error("[%s] /compact 压缩失败: %s", sid, e)
+                compressed = False
+
+            if compressed:
+                session_after = await session_dao.get_by_id(session_id)
+                tokens_after = session_after.token_count if session_after else 0
+                freed = tokens_before - tokens_after
+                result_text = (
+                    f"上下文已压缩。\n\n"
+                    f"- 压缩前：{tokens_before:,} tokens / {max_tokens:,} tokens\n"
+                    f"- 压缩后：{tokens_after:,} tokens\n"
+                    f"- 释放：{freed:,} tokens ({freed * 100 // max(tokens_before, 1)}%)"
+                )
+                if custom_instructions:
+                    result_text += f"\n- 自定义指令：'{custom_instructions}'"
+            else:
+                result_text = (
+                    f"压缩未触发。当前 {tokens_before:,} tokens / {max_tokens:,} tokens，"
+                    f"可能消息数不足（需至少 5 条）或已是最新状态。"
+                )
+
+        push_event(session_id, SSEEventType.text_delta, {
+            "message_id": assistant_id, "delta": result_text,
+        })
+
+        final_msg = await msg_dao.create(
+            session_id=session_id,
+            role="assistant",
+            content=result_text,
+            token_count=0,
+        )
+        push_event(session_id, SSEEventType.message_done, {
+            "message_id": final_msg.id,
+            "streaming_message_id": assistant_id,
+            "content": result_text,
+            "role": "assistant",
+            "token_count": 0,
+            "stop_reason": "end_turn",
+        })
+        log.info("[%s] /compact 完成 — tokens_before=%d tokens_after=%d",
+                 sid, tokens_before, tokens_after)
+        return user_msg_id
+
+    async def _drain_queued_tasks(
+        self, session_id: str, session, msg_dao, session_dao,
+    ) -> None:
+        """Drain queued followup tasks after the current run completes.
+
+        Processes tasks in FIFO order. Each followup task triggers a full
+        agent loop (recursive call to process_message). Collect-mode tasks
+        are skipped during auto-drain; they must be explicitly consumed.
+        """
+        from app.agent.task_manager import dequeue_task, has_queued_tasks
+
+        while has_queued_tasks(session_id):
+            entry = dequeue_task(session_id)
+            if entry is None:
+                break
+            if entry.mode == "collect":
+                # Don't auto-drain collect-mode tasks
+                continue
+            log.info(
+                "[%s] 处理队列任务 — mode=%s 预览=%r",
+                session_id[:8], entry.mode, entry.content[:80],
+            )
+            try:
+                await self.process_message(
+                    session_id=session_id,
+                    content=entry.content,
+                    role=entry.role,
+                )
+            except Exception as e:
+                log.error(
+                    "[%s] 队列任务处理失败: %s", session_id[:8], e,
+                )
+
+    # Tools whose results are safe to clear in microcompact (read/search/fetch tools)
+    _MICROCOMPACTABLE_TOOLS = frozenset({
+        "web_search", "web_fetch", "file_read", "file_search",
+        "bash", "grep", "glob",
+    })
+
+    def _microcompact_tool_results(self, sid: str, llm_messages: list[dict]) -> None:
+        """Clear old tool results from compactable tools before each API call.
+
+        Keeps the most recent N tool results at full length, replaces older ones
+        with a placeholder. This matches Claude Code's microcompact approach:
+        cheap, non-destructive, and effective at reducing token usage.
+
+        Only clears results from read/search/fetch tools — never touches
+        write tools (file_write, TodoWrite, etc.) whose results carry state.
+        """
+        keep_recent = settings.microcompact_keep_recent
+        # Find all tool result indices for compactable tools
+        compactable_indices = []
+        for i, m in enumerate(llm_messages):
+            if m.get("role") != "tool":
+                continue
+            tc_id = m.get("tool_call_id", "")
+            if not tc_id:
+                continue
+            # Find the corresponding assistant message with tool_calls to get the tool name
+            for j in range(i - 1, -1, -1):
+                prev = llm_messages[j]
+                if prev.get("role") == "assistant" and prev.get("tool_calls"):
+                    for tc in prev["tool_calls"]:
+                        if tc.get("id") == tc_id:
+                            if tc.get("function", {}).get("name") in self._MICROCOMPACTABLE_TOOLS:
+                                compactable_indices.append(i)
+                            break
+                    break
+
+        if len(compactable_indices) <= keep_recent:
+            return
+
+        # Clear older tool results, keep most recent N
+        to_clear = compactable_indices[:-keep_recent]
+        cleared = 0
+        for i in to_clear:
+            content = llm_messages[i].get("content") or ""
+            if content and content != _MICROCOMPACT_PLACEHOLDER:
+                llm_messages[i] = {
+                    **llm_messages[i],
+                    "content": _MICROCOMPACT_PLACEHOLDER,
+                }
+                cleared += 1
+
+        if cleared:
+            log.debug("[%s] microcompact: cleared %d old tool results (kept %d recent)",
+                      sid, cleared, keep_recent)
 
     def _trim_context_if_needed(self, sid: str, llm_messages: list[dict]) -> None:
         """Two-level trim: soft (early) and hard (near-limit).

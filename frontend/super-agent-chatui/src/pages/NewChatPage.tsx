@@ -103,20 +103,23 @@ export function NewChatPage() {
   return (
     <div className="flex-1 flex flex-col min-h-0 items-center justify-center px-4">
       {/* ── Hero section ─────────────────────────────────────────── */}
-      <div className="mb-6 text-center">
-        <div className="flex items-center justify-center gap-2 mb-3">
-          <div className="w-2 h-2 rounded-full bg-[var(--color-primary)] animate-pulse-cyan" />
-          <span className="font-mono text-xs tracking-[0.3em] text-[var(--color-text-tertiary)] uppercase">
+      <div className="mb-8 text-center">
+        <div className="flex items-center justify-center gap-3 mb-4">
+          <div className="w-1.5 h-1.5 rounded-full bg-[var(--color-primary)] animate-pulse-cyan" />
+          <span className="font-mono text-xs tracking-[0.4em] text-[var(--color-text-tertiary)] uppercase">
             super-agent
           </span>
-          <div className="w-2 h-2 rounded-full bg-[var(--color-primary)] animate-pulse-cyan" />
+          <div className="w-1.5 h-1.5 rounded-full bg-[var(--color-primary)] animate-pulse-cyan" />
         </div>
-        <h1 className="text-2xl font-semibold text-[var(--color-text)] tracking-tight">
+        <h1 className="text-3xl font-semibold text-[var(--color-text)] tracking-tight">
           有什么可以帮你？
         </h1>
+        <p className="mt-2 text-sm text-[var(--color-text-tertiary)]">
+          输入指令开始对话，支持技能、代码、文件处理
+        </p>
       </div>
 
-      {/* ── Input area ───────────────────────────────────────────── */}
+      {/* ── Input area with animated gradient border ────────────── */}
       <div className="max-w-xl w-full">
         <div className="relative">
           {picker.open && (
@@ -129,7 +132,7 @@ export function NewChatPage() {
             />
           )}
         <div
-          className="glass rounded-xl p-4 flex items-end gap-3 transition-shadow duration-300"
+          className="border-gradient rounded-2xl p-5 flex items-end gap-3 transition-all duration-300"
           style={{ boxShadow: hasContent ? "var(--glow-primary)" : "var(--shadow-md)" }}
         >
           <textarea
@@ -162,18 +165,18 @@ export function NewChatPage() {
             placeholder="输入消息开始对话... Shift+Enter 换行，/ 选择技能"
             className="flex-1 bg-transparent text-[var(--color-text)] text-sm leading-relaxed
                        placeholder:text-[var(--color-text-tertiary)] resize-none outline-none
-                       min-h-[24px] max-h-[160px]"
+                       min-h-[28px] max-h-[160px]"
             rows={1}
             aria-label="新对话消息输入"
           />
           <button
             onClick={handleSend}
             disabled={!hasContent}
-            className={`flex items-center justify-center w-9 h-9 rounded-lg
+            className={`flex items-center justify-center w-10 h-10 rounded-xl
                        transition-all duration-200
                        ${hasContent
                          ? "bg-[var(--color-primary)] text-[var(--color-surface-dark)] shadow-[var(--glow-primary)] hover:bg-[var(--color-primary-hover)] active:scale-95"
-                         : "bg-[var(--color-border-dim)] text-[var(--color-text-tertiary)] cursor-not-allowed"
+                         : "bg-[var(--color-surface-raised)] text-[var(--color-text-tertiary)] cursor-not-allowed"
                        }`}
             aria-label="发送消息"
             type="button"
@@ -186,17 +189,21 @@ export function NewChatPage() {
         </div>
 
         {/* ── Quick suggestions ─────────────────────────────────────── */}
-        <div className="flex flex-wrap justify-center gap-2 mt-4">
+        <div className="flex flex-wrap justify-center gap-2 mt-5">
           {SUGGESTIONS.map((s) => (
             <button
               key={s.label}
               onClick={() => handleSuggestion(s.prompt)}
-              className="glass rounded-lg px-3 py-1.5 text-xs font-mono
-                         text-[var(--color-text-secondary)] hover:text-[var(--color-primary)]
-                         hover:shadow-[var(--glow-primary)] transition-all duration-200
-                         active:scale-95"
+              className="rounded-lg px-3.5 py-2 text-xs font-mono
+                         border border-[var(--color-border-dim)]
+                         text-[var(--color-text-secondary)]
+                         hover:text-[var(--color-primary)]
+                         hover:border-[var(--color-primary)]
+                         hover:shadow-[var(--glow-primary)]
+                         transition-all duration-200 active:scale-95"
               type="button"
             >
+              <span className="text-[var(--color-primary)] mr-1.5">·</span>
               {s.label}
             </button>
           ))}

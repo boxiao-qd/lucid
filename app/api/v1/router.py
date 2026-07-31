@@ -12,6 +12,7 @@ from app.api.v1.notifications import router as notifications_router
 from app.api.v1.files import router as files_router
 from app.api.v1.mcp import router as mcp_router
 from app.api.v1.internal.cron import router as internal_cron_router
+from app.api.v1.tasks import router as tasks_router
 
 api_router = APIRouter()
 
@@ -28,3 +29,4 @@ api_router.include_router(notifications_router, tags=["notifications"])
 api_router.include_router(files_router, tags=["files"])
 api_router.include_router(mcp_router, tags=["mcp"])
 api_router.include_router(internal_cron_router)
+api_router.include_router(tasks_router, tags=["tasks"])

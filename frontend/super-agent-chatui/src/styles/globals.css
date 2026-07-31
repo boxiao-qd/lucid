@@ -32,6 +32,12 @@ body {
   outline-offset: 2px;
 }
 
+/* Textareas provide their own focus indicator via the caret and the
+   container's :focus-within glow — suppress the default outline. */
+textarea:focus-visible {
+  outline: none;
+}
+
 /* ── Glassmorphism utility ────────────────────────────────────────── */
 .glass {
   background: var(--glass-bg);
@@ -64,6 +70,12 @@ body {
     linear-gradient(var(--color-surface-alt), var(--color-surface-alt)) padding-box,
     conic-gradient(from var(--gradient-angle, 0deg), var(--color-primary), var(--color-success), var(--color-primary)) border-box;
   animation: gradient-rotate 3s linear infinite;
+}
+
+/* Focused state — speed up the rotation and add a neon glow */
+.border-gradient:focus-within {
+  animation-duration: 1.5s;
+  box-shadow: var(--glow-primary-strong);
 }
 
 /* ── Pulse animation for streaming ─────────────────────────────────── */

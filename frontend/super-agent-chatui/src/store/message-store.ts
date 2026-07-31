@@ -49,6 +49,7 @@ interface MessageState {
   streamingMessageId: string | null;
   streamingDelta: string;
   userAckMessage: string | null;
+  taskNotice: string | null;
   thinkingBlocks: Record<string, ThinkingBlockState>;
   toolCallBlocks: Record<string, ToolCallBlockState>;
   delegationBlocks: Record<string, DelegationBlockState>;
@@ -62,6 +63,8 @@ interface MessageState {
   resetDelta: () => void;
   setUserAck: (message: string) => void;
   clearUserAck: () => void;
+  setTaskNotice: (message: string) => void;
+  clearTaskNotice: () => void;
   startThinking: (messageId: string) => void;
   appendThinkingDelta: (messageId: string, delta: string) => void;
   endThinking: (messageId: string) => void;
@@ -92,6 +95,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   streamingMessageId: null,
   streamingDelta: "",
   userAckMessage: null,
+  taskNotice: null,
   thinkingBlocks: {},
   toolCallBlocks: {},
   delegationBlocks: {},
@@ -137,6 +141,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   resetDelta: () => set({ streamingDelta: "" }),
   setUserAck: (message) => set({ userAckMessage: message }),
   clearUserAck: () => set({ userAckMessage: null }),
+  setTaskNotice: (message) => set({ taskNotice: message }),
+  clearTaskNotice: () => set({ taskNotice: null }),
 
   // ThinkingBlock actions
   startThinking: (messageId) =>

@@ -75,7 +75,6 @@ async def execute(args_str: str, employee_id: int) -> str:
                 title = content or "(no description)"
                 await dao.create(title=title, priority=0)
     else:
-        # merge=false: replace entire list, preserving IDs from input
         existing_todos = await dao.list_todos()
         for t in existing_todos:
             await dao.soft_delete(t.id)

@@ -1,9 +1,10 @@
 """Unit tests for context compression enhancement.
 
 Covers:
-- Settings.context_compression_threshold validator
+- Settings.context_window_tokens validator
 - SSEEventType.context_compression + ContextCompressionData schema
 - compress_if_needed threshold logic and SSE push (mocked DAOs)
+- Circuit breaker behavior
 """
 
 import pytest
@@ -17,44 +18,35 @@ from app.sse.event_types import SSEEventType, ContextCompressionData
 # 1. Config validator
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestCompressionThresholdConfig:
-    def test_default_is_0_8(self):
+class TestCompressionConfig:
+    def test_default_context_window(self):
         s = Settings()
-        assert s.context_compression_threshold == 0.8
+        assert s.context_window_tokens == 200_000
 
-    def test_valid_custom_value(self):
-        s = Settings(context_compression_threshold=0.6)
-        assert s.context_compression_threshold == 0.6
+    def test_custom_context_window(self):
+        s = Settings(context_window_tokens=128_000)
+        assert s.context_window_tokens == 128_000
 
-    def test_boundary_exactly_1_0(self):
-        s = Settings(context_compression_threshold=1.0)
-        assert s.context_compression_threshold == 1.0
+    def test_context_window_too_low_falls_back(self):
+        s = Settings(context_window_tokens=16_000)
+        assert s.context_window_tokens == 200_000  # min is 32K
 
-    def test_low_boundary_just_above_0(self):
-        s = Settings(context_compression_threshold=0.1)
-        assert s.context_compression_threshold == 0.1
+    def test_default_buffer_tokens(self):
+        s = Settings()
+        assert s.auto_compact_buffer_tokens == 13_000
 
-    def test_zero_falls_back_to_default(self):
-        # 0.0 is out of range (0.0, 1.0], should fall back to 0.8
-        s = Settings(context_compression_threshold=0.0)
-        assert s.context_compression_threshold == 0.8
+    def test_default_output_tokens(self):
+        s = Settings()
+        assert s.max_output_tokens == 20_000
 
-    def test_greater_than_1_falls_back_to_default(self):
-        s = Settings(context_compression_threshold=1.5)
-        assert s.context_compression_threshold == 0.8
+    def test_default_max_overflow_retries(self):
+        s = Settings()
+        assert s.max_overflow_retries == 3
 
-    def test_negative_falls_back_to_default(self):
-        s = Settings(context_compression_threshold=-0.1)
-        assert s.context_compression_threshold == 0.8
-
-    def test_string_value_is_parsed(self):
-        # Env vars arrive as strings
-        s = Settings(context_compression_threshold="0.75")
-        assert s.context_compression_threshold == 0.75
-
-    def test_string_invalid_falls_back_to_default(self):
-        s = Settings(context_compression_threshold="1.5")
-        assert s.context_compression_threshold == 0.8
+    def test_microcompact_defaults(self):
+        s = Settings()
+        assert s.microcompact_enabled is True
+        assert s.microcompact_keep_recent == 5
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -92,7 +84,7 @@ class TestContextCompressionSSE:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. compress_if_needed threshold logic
+# 3. compress_if_needed threshold logic (absolute-offset)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_session(token_count: int, max_tokens: int):
@@ -143,8 +135,8 @@ async def test_skip_when_max_tokens_zero():
 
 @pytest.mark.asyncio
 async def test_skip_when_below_threshold():
-    """token_count/max_tokens = 0.75 < threshold=0.8 → skip."""
-    session = _make_session(token_count=75000, max_tokens=100000)
+    """100K tokens in 200K window is well below the 167K threshold → skip."""
+    session = _make_session(token_count=100_000, max_tokens=200_000)
     session_dao = AsyncMock()
     session_dao.get_by_id.return_value = session
 
@@ -153,7 +145,9 @@ async def test_skip_when_below_threshold():
          patch("app.agent.context_compressor.get_session_factory"), \
          patch("app.agent.context_compressor.settings") as mock_settings:
         mock_settings.memory_distill_enabled = False
-        mock_settings.context_compression_threshold = 0.8
+        mock_settings.context_window_tokens = 200_000
+        mock_settings.max_output_tokens = 20_000
+        mock_settings.auto_compact_buffer_tokens = 13_000
 
         from importlib import reload
         import app.agent.context_compressor as cc
@@ -163,9 +157,9 @@ async def test_skip_when_below_threshold():
 
 
 @pytest.mark.asyncio
-async def test_skip_when_exactly_below_threshold():
-    """Boundary: 79999/100000 = 0.79999 < 0.8 → skip."""
-    session = _make_session(token_count=79999, max_tokens=100000)
+async def test_skip_when_near_threshold_but_below():
+    """166K < 167K (200K - 20K - 13K) → skip."""
+    session = _make_session(token_count=166_000, max_tokens=200_000)
     session_dao = AsyncMock()
     session_dao.get_by_id.return_value = session
 
@@ -174,7 +168,9 @@ async def test_skip_when_exactly_below_threshold():
          patch("app.agent.context_compressor.get_session_factory"), \
          patch("app.agent.context_compressor.settings") as mock_settings:
         mock_settings.memory_distill_enabled = False
-        mock_settings.context_compression_threshold = 0.8
+        mock_settings.context_window_tokens = 200_000
+        mock_settings.max_output_tokens = 20_000
+        mock_settings.auto_compact_buffer_tokens = 13_000
 
         import app.agent.context_compressor as cc
         result = await cc.compress_if_needed(employee_id=1, session_id="sess1")
@@ -184,8 +180,8 @@ async def test_skip_when_exactly_below_threshold():
 
 @pytest.mark.asyncio
 async def test_trigger_at_threshold(mock_history):
-    """token_count/max_tokens = 0.80 >= threshold=0.8 → proceeds to compress."""
-    session = _make_session(token_count=80000, max_tokens=100000)
+    """167K >= 167K (200K - 20K - 13K) → proceeds to compress."""
+    session = _make_session(token_count=167_000, max_tokens=200_000)
     session_dao = AsyncMock()
     session_dao.get_by_id.return_value = session
 
@@ -204,7 +200,9 @@ async def test_trigger_at_threshold(mock_history):
          patch("app.agent.context_compressor.LLMRouter") as MockRouter, \
          patch("app.api.v1.stream.push_event", new_callable=AsyncMock) as mock_push:
         mock_settings.memory_distill_enabled = False
-        mock_settings.context_compression_threshold = 0.8
+        mock_settings.context_window_tokens = 200_000
+        mock_settings.max_output_tokens = 20_000
+        mock_settings.auto_compact_buffer_tokens = 13_000
         mock_settings.compress_model = "test-model"
         router_instance = AsyncMock()
         router_instance.chat.return_value = mock_response
@@ -218,8 +216,8 @@ async def test_trigger_at_threshold(mock_history):
 
 @pytest.mark.asyncio
 async def test_trigger_above_threshold(mock_history):
-    """token_count/max_tokens = 0.90 > threshold=0.8 → compresses."""
-    session = _make_session(token_count=90000, max_tokens=100000)
+    """180K > 167K → compresses."""
+    session = _make_session(token_count=180_000, max_tokens=200_000)
     session_dao = AsyncMock()
     session_dao.get_by_id.return_value = session
 
@@ -238,7 +236,9 @@ async def test_trigger_above_threshold(mock_history):
          patch("app.agent.context_compressor.LLMRouter") as MockRouter, \
          patch("app.api.v1.stream.push_event", new_callable=AsyncMock):
         mock_settings.memory_distill_enabled = False
-        mock_settings.context_compression_threshold = 0.8
+        mock_settings.context_window_tokens = 200_000
+        mock_settings.max_output_tokens = 20_000
+        mock_settings.auto_compact_buffer_tokens = 13_000
         mock_settings.compress_model = "test-model"
         router_instance = AsyncMock()
         router_instance.chat.return_value = mock_response
@@ -253,7 +253,7 @@ async def test_trigger_above_threshold(mock_history):
 @pytest.mark.asyncio
 async def test_sse_event_pushed_on_compress(mock_history):
     """After compression, push_event must be called with correct fields."""
-    session = _make_session(token_count=90000, max_tokens=100000)
+    session = _make_session(token_count=180_000, max_tokens=200_000)
     session_dao = AsyncMock()
     session_dao.get_by_id.return_value = session
 
@@ -272,7 +272,9 @@ async def test_sse_event_pushed_on_compress(mock_history):
          patch("app.agent.context_compressor.LLMRouter") as MockRouter, \
          patch("app.api.v1.stream.push_event", new_callable=AsyncMock) as mock_push:
         mock_settings.memory_distill_enabled = False
-        mock_settings.context_compression_threshold = 0.8
+        mock_settings.context_window_tokens = 200_000
+        mock_settings.max_output_tokens = 20_000
+        mock_settings.auto_compact_buffer_tokens = 13_000
         mock_settings.compress_model = "test-model"
         router_instance = AsyncMock()
         router_instance.chat.return_value = mock_response
@@ -285,18 +287,16 @@ async def test_sse_event_pushed_on_compress(mock_history):
         call_kwargs = mock_push.call_args
         _, event_type, payload = call_kwargs[0]
         assert event_type == SSEEventType.context_compression
-        assert payload["tokens_before"] == 90000
+        assert payload["tokens_before"] == 180_000
         assert "tokens_after" in payload
-        # compressed_count = len(history[2:-2]) = 2
         assert payload["compressed_count"] == 2
-        # summary_preview must be truncated to 100 chars
         assert len(payload["summary_preview"]) <= 100
 
 
 @pytest.mark.asyncio
 async def test_sse_push_failure_does_not_abort_compression(mock_history):
     """push_event raising an exception should not cause compress_if_needed to return False."""
-    session = _make_session(token_count=90000, max_tokens=100000)
+    session = _make_session(token_count=180_000, max_tokens=200_000)
     session_dao = AsyncMock()
     session_dao.get_by_id.return_value = session
 
@@ -315,7 +315,9 @@ async def test_sse_push_failure_does_not_abort_compression(mock_history):
          patch("app.agent.context_compressor.LLMRouter") as MockRouter, \
          patch("app.api.v1.stream.push_event", new_callable=AsyncMock, side_effect=RuntimeError("SSE closed")):
         mock_settings.memory_distill_enabled = False
-        mock_settings.context_compression_threshold = 0.8
+        mock_settings.context_window_tokens = 200_000
+        mock_settings.max_output_tokens = 20_000
+        mock_settings.auto_compact_buffer_tokens = 13_000
         mock_settings.compress_model = "test-model"
         router_instance = AsyncMock()
         router_instance.chat.return_value = mock_response
@@ -324,14 +326,13 @@ async def test_sse_push_failure_does_not_abort_compression(mock_history):
         import app.agent.context_compressor as cc
         result = await cc.compress_if_needed(employee_id=1, session_id="sess1")
 
-    # Compression succeeded even though SSE push failed
     assert result is True
 
 
 @pytest.mark.asyncio
 async def test_skip_when_too_few_messages():
     """If history has < 5 messages after threshold passes, return False."""
-    session = _make_session(token_count=90000, max_tokens=100000)
+    session = _make_session(token_count=180_000, max_tokens=200_000)
     session_dao = AsyncMock()
     session_dao.get_by_id.return_value = session
 
@@ -348,9 +349,64 @@ async def test_skip_when_too_few_messages():
          patch("app.agent.context_compressor.get_session_factory"), \
          patch("app.agent.context_compressor.settings") as mock_settings:
         mock_settings.memory_distill_enabled = False
-        mock_settings.context_compression_threshold = 0.8
+        mock_settings.context_window_tokens = 200_000
+        mock_settings.max_output_tokens = 20_000
+        mock_settings.auto_compact_buffer_tokens = 13_000
 
         import app.agent.context_compressor as cc
         result = await cc.compress_if_needed(employee_id=1, session_id="sess1")
 
     assert result is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Circuit breaker tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCircuitBreaker:
+    def test_reset_clears_failures(self):
+        from app.agent.context_compressor import _failure_counts, reset_circuit_breaker
+        _failure_counts["test-session"] = 3
+        reset_circuit_breaker("test-session")
+        assert "test-session" not in _failure_counts
+
+    def test_check_returns_true_after_max_failures(self):
+        from app.agent.context_compressor import _check_circuit_breaker, _failure_counts
+        _failure_counts["test-session"] = 3
+        assert _check_circuit_breaker("test-session") is True
+        _failure_counts.pop("test-session", None)
+
+    def test_check_returns_false_below_max(self):
+        from app.agent.context_compressor import _check_circuit_breaker, _failure_counts
+        _failure_counts["test-session"] = 2
+        assert _check_circuit_breaker("test-session") is False
+        _failure_counts.pop("test-session", None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. _should_compress threshold logic
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestShouldCompress:
+    def test_200k_window_threshold(self):
+        from app.agent.context_compressor import _should_compress
+        # 200K - 20K - 13K = 167K
+        assert _should_compress(100_000, 200_000) is False
+        assert _should_compress(167_000, 200_000) is True
+        assert _should_compress(180_000, 200_000) is True
+
+    def test_128k_window_threshold(self):
+        from app.agent.context_compressor import _should_compress
+        # 128K - 20K - 13K = 95K
+        assert _should_compress(80_000, 128_000) is False
+        assert _should_compress(95_000, 128_000) is True
+
+    def test_small_window_falls_back_to_80_percent(self):
+        from app.agent.context_compressor import _should_compress
+        # 32K - 20K - 13K = -1K → falls back to 80% = 25.6K
+        assert _should_compress(20_000, 32_000) is False
+        assert _should_compress(26_000, 32_000) is True
+
+    def test_max_tokens_zero_returns_false(self):
+        from app.agent.context_compressor import _should_compress
+        assert _should_compress(100_000, 0) is False

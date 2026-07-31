@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import field_validator
@@ -71,8 +72,14 @@ class Settings(BaseSettings):
     memory_injection_max_chars: int = 500               # env: MEMORY_INJECTION_MAX_CHARS
     memory_injection_top_k: int = 10                    # env: MEMORY_INJECTION_TOP_K
 
-    # Context Compression
-    context_compression_threshold: float = 0.8          # env: CONTEXT_COMPRESSION_THRESHOLD (0.0, 1.0]
+    # Context Compression — absolute-token-offset thresholds (matching Claude Code & OpenClaw)
+    context_window_tokens: int = 200_000                # env: CONTEXT_WINDOW_TOKENS — model context window size
+    max_output_tokens: int = 20_000                     # env: MAX_OUTPUT_TOKENS — reserved for model response
+    auto_compact_buffer_tokens: int = 13_000             # env: AUTO_COMPACT_BUFFER_TOKENS — headroom before auto-compact fires
+    max_overflow_retries: int = 3                        # env: MAX_OVERFLOW_RETRIES — circuit breaker for reactive recovery
+    # Microcompact: clear old tool results before each API call
+    microcompact_enabled: bool = True                    # env: MICROCOMPACT_ENABLED
+    microcompact_keep_recent: int = 5                    # env: MICROCOMPACT_KEEP_RECENT — keep last N tool results
 
     # Agent Plan-Execute Loop
     max_plan_steps: int = 90                            # env: MAX_PLAN_STEPS — max plan step executions before forced stop
@@ -86,16 +93,16 @@ class Settings(BaseSettings):
     # Internal API token for scheduler → super-agent communication
     internal_api_token: str = ""  # env: INTERNAL_API_TOKEN
 
-    @field_validator("context_compression_threshold", "max_plan_steps", mode="before")
+    @field_validator("context_window_tokens", "max_plan_steps", mode="before")
     @classmethod
     def validate_numeric_bounds(cls, v, info):
-        v = float(v) if info.field_name == "context_compression_threshold" else int(v)
-        if info.field_name == "context_compression_threshold":
-            if not (0.0 < v <= 1.0):
+        v = int(v)
+        if info.field_name == "context_window_tokens":
+            if v < 32_000:
                 logging.getLogger(__name__).warning(
-                    f"context_compression_threshold={v} out of range (0.0, 1.0], using default 0.8"
+                    f"context_window_tokens={v} too low (min 32K), using default 200000"
                 )
-                return 0.8
+                return 200_000
             return v
         # max_plan_steps
         if v < 1:

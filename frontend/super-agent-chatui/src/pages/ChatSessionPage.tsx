@@ -129,6 +129,9 @@ export function ChatSessionPage() {
         if (event.type === "stream_start" && event.data) {
           const d = event.data as { message_id: string };
           s.setStreaming(d.message_id);
+          // A new run is starting — clear any lingering task notice
+          // ("已加入队列" etc.) so it doesn't outlive the queue state.
+          s.clearTaskNotice();
         }
         if (event.type === "user_ack" && event.data) {
           const d = event.data as { message_id: string; message: string };
@@ -200,6 +203,29 @@ export function ChatSessionPage() {
             s.setPlan({ ...currentPlan, status: "completed" });
           }
         }
+        // Task lifecycle (cancel / queue / steer) — show transient notice
+        if (event.type === "task_queued" && event.data) {
+          const d = event.data as { queue_depth: number; mode: string };
+          const modeLabel: Record<string, string> = {
+            followup: "排队等待",
+            steer: "信息补充",
+            collect: "收集",
+            interrupt: "中断",
+          };
+          const label = modeLabel[d.mode] || d.mode;
+          s.setTaskNotice(`已加入队列（第 ${d.queue_depth} 位，${label}），将在当前任务后执行`);
+          window.setTimeout(() => s.clearTaskNotice(), 3000);
+        }
+        if (event.type === "task_steered" && event.data) {
+          const d = event.data as { run_id: string; content_preview: string };
+          s.setTaskNotice("信息补充已提交，agent 将结合此信息继续");
+          window.setTimeout(() => s.clearTaskNotice(), 3000);
+        }
+        if (event.type === "task_cancelled" && event.data) {
+          const d = event.data as { run_id: string; reason: string };
+          s.setTaskNotice(`任务已取消（原因：${d.reason}）`);
+          window.setTimeout(() => s.clearTaskNotice(), 3000);
+        }
         if (event.type === "message_done") {
           const d = event.data as {
             message_id: string;
@@ -226,6 +252,27 @@ export function ChatSessionPage() {
               is_compressed: false,
               created_at: new Date().toISOString(),
             });
+          } else if (d.role === "user" && d.content) {
+            // A user message was saved by the backend. For normal sends the
+            // frontend already has a temp message with the same content as
+            // the last message in the list — skip to avoid duplicates. For
+            // queued-then-drained tasks there is no temp message, so this is
+            // the moment to display it (the last message is the assistant's
+            // final reply from the previous task).
+            const existing = useMessageStore.getState().messages[sessionId!] || [];
+            const last = existing[existing.length - 1];
+            const isDup = !!last && last.role === "user" && last.content === d.content;
+            if (!isDup) {
+              s.appendMessage(sessionId!, {
+                id: d.message_id,
+                session_id: sessionId!,
+                role: "user",
+                content: d.content,
+                token_count: d.token_count,
+                is_compressed: false,
+                created_at: new Date().toISOString(),
+              });
+            }
           }
           s.setStreaming(null);
           s.clearUserAck();

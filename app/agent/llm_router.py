@@ -7,6 +7,39 @@ import logging
 
 log = logging.getLogger(__name__)
 
+# Context overflow detection patterns (matching OpenClaw's approach)
+_OVERFLOW_PATTERNS = [
+    "request_too_large",
+    "request exceeds the maximum size",
+    "context length exceeded",
+    "maximum context length",
+    "prompt is too long",
+    "exceeds model context window",
+    "context overflow",
+    "413",
+]
+
+
+class ContextOverflowError(Exception):
+    """Raised when the LLM returns a context-length exceeded error.
+
+    The caller should trigger compression and retry rather than failing immediately.
+    """
+
+    def __init__(self, message: str = "", original_error: Exception | None = None):
+        super().__init__(message)
+        self.original_error = original_error
+
+
+def _is_context_overflow(error: APIError) -> bool:
+    """Check if an APIError indicates a context overflow condition."""
+    error_text = str(error).lower()
+    # Also check the response body if available
+    body = getattr(error, "body", None)
+    if body and isinstance(body, dict):
+        error_text += " " + str(body.get("error", "")).lower()
+    return any(pattern in error_text for pattern in _OVERFLOW_PATTERNS)
+
 
 class LLMRouter:
     def __init__(self):
@@ -62,6 +95,10 @@ class LLMRouter:
                     self._rotate_key()
                 except APIError as e:
                     last_error = e
+                    if _is_context_overflow(e):
+                        raise ContextOverflowError(
+                            f"Context overflow detected for model={try_model}: {e}", original_error=e
+                        ) from e
                     if e.status_code in (401, 403):
                         log.warning("LLM auth error, rotating key")
                         self._rotate_key()

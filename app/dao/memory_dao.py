@@ -78,6 +78,23 @@ class MemoryDAO(BaseDAO):
         await session.close()
         return item
 
+    async def set_memory_type(self, key: str, memory_type: str) -> bool:
+        """Change the memory_type of a memory entry (e.g. short_term → long_term)."""
+        session = self._session()
+        result = await session.scalars(
+            select(MemoryModel).where(
+                self._filter_by_user(MemoryModel),
+                MemoryModel.is_deleted == 0,
+                MemoryModel.key == key,
+            )
+        )
+        item = result.first()
+        if item:
+            item.memory_type = memory_type
+            await session.commit()
+        await session.close()
+        return item is not None
+
     async def soft_delete(self, key: str) -> bool:
         session = self._session()
         result = await session.scalars(
