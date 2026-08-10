@@ -8,6 +8,12 @@ export interface SessionItem {
   is_active: boolean;
 }
 
+export interface Attachment {
+  type: string;
+  url: string;
+  name: string;
+}
+
 export interface MessageItem {
   id: string;
   session_id: string;
@@ -19,6 +25,7 @@ export interface MessageItem {
   reasoning_content?: string;
   token_count: number;
   is_compressed: boolean;
+  attachments?: Attachment[];
   created_at: string;
 }
 

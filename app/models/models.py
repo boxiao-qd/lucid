@@ -36,6 +36,7 @@ class Message(Base, UserAccountMixin):
     token_count: Mapped[int] = mapped_column(Integer, default=0)
     is_compressed: Mapped[int] = mapped_column(SmallInteger, default=0)
     is_distilled: Mapped[int] = mapped_column(SmallInteger, default=0)  # marked after distillation
+    attachments: Mapped[str | None] = mapped_column(Text)  # JSON stored as text, e.g. [{"type":"image","url":"...","name":"..."}]
     created_at: Mapped[str] = mapped_column(String(36), default=lambda: __import__("datetime").datetime.utcnow().isoformat())
 
 

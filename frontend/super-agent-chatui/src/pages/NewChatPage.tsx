@@ -1,11 +1,11 @@
 import { useState, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { apiPost } from "@/services/api-client";
+import { apiPost, apiUploadFile } from "@/services/api-client";
 import { useSessionStore } from "@/store/session-store";
 import { useSkillList } from "@/hooks/useSkillList";
 import { useSkillPicker } from "@/hooks/useSkillPicker";
 import { SkillPicker } from "@/components/base/SkillPicker";
-import type { SkillItem } from "@/types/api-types";
+import type { SkillItem, Attachment } from "@/types/api-types";
 
 const SUGGESTIONS = [
   { label: "搜索资讯", prompt: "帮我搜索最新的AI行业动态" },
@@ -24,7 +24,10 @@ interface CreateSessionResp {
 export function NewChatPage() {
   const navigate = useNavigate();
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const composingRef = useRef(false);
   const addSession = useSessionStore((s) => s.addSession);
   const setActiveSession = useSessionStore((s) => s.setActiveSession);
@@ -33,9 +36,11 @@ export function NewChatPage() {
   const picker = useSkillPicker(skills);
 
   const handleSend = useCallback(async () => {
-    if (!input.trim()) return;
+    if (!input.trim() && attachments.length === 0) return;
     const content = input.trim();
+    const pendingAttachments = attachments;
     setInput("");
+    setAttachments([]);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
     const resp = await apiPost<CreateSessionResp>("/sessions", {
@@ -53,9 +58,57 @@ export function NewChatPage() {
     await apiPost<{ message_id: string }>("/messages", {
       session_id: resp.session_id,
       content,
+      attachments: pendingAttachments,
     });
     navigate(`/chat/${resp.session_id}`);
-  }, [input, navigate, addSession, setActiveSession]);
+  }, [input, attachments, navigate, addSession, setActiveSession]);
+
+  const handleUploadImage = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    setUploading(true);
+    try {
+      for (const file of Array.from(files)) {
+        if (!file.type.startsWith("image/")) continue;
+        const resp = await apiUploadFile<{ url: string; name: string; type: string }>("/files/upload-image", file);
+        setAttachments((prev) => [...prev, { url: resp.url, name: resp.name, type: "image" }]);
+      }
+    } catch (err) {
+      console.error("图片上传失败:", err);
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }, []);
+
+  const handleRemoveAttachment = useCallback((url: string) => {
+    setAttachments((prev) => prev.filter((a) => a.url !== url));
+  }, []);
+
+  const handlePaste = useCallback(async (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imageFiles: File[] = [];
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) imageFiles.push(file);
+      }
+    }
+    if (imageFiles.length === 0) return;
+    e.preventDefault();
+    setUploading(true);
+    try {
+      for (const file of imageFiles) {
+        const resp = await apiUploadFile<{ url: string; name: string; type: string }>("/files/upload-image", file);
+        setAttachments((prev) => [...prev, { url: resp.url, name: resp.name, type: "image" }]);
+      }
+    } catch (err) {
+      console.error("粘贴图片上传失败:", err);
+    } finally {
+      setUploading(false);
+    }
+  }, []);
 
   const handleSuggestion = useCallback((prompt: string) => {
     setInput(prompt);
@@ -98,7 +151,8 @@ export function NewChatPage() {
     });
   }, [input, picker]);
 
-  const hasContent = input.trim().length > 0;
+  const hasContent = input.trim().length > 0 || attachments.length > 0;
+  const canSend = hasContent && !uploading;
 
   return (
     <div className="flex-1 flex flex-col min-h-0 items-center justify-center px-4">
@@ -133,12 +187,68 @@ export function NewChatPage() {
           )}
         <div
           className="border-gradient rounded-2xl p-5 flex items-end gap-3 transition-all duration-300"
-          style={{ boxShadow: hasContent ? "var(--glow-primary)" : "var(--shadow-md)" }}
+          style={{ boxShadow: canSend ? "var(--glow-primary)" : "var(--shadow-md)" }}
         >
+          {/* Image upload button */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={handleUploadImage}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            className="flex items-center justify-center w-10 h-10 rounded-xl shrink-0
+                       bg-[var(--color-surface-raised)] text-[var(--color-text-secondary)]
+                       hover:text-[var(--color-primary)]
+                       active:scale-95 transition-all duration-200
+                       disabled:opacity-50 disabled:cursor-not-allowed"
+            aria-label="上传图片"
+            type="button"
+            title="上传图片（或直接粘贴）"
+          >
+            {uploading ? (
+              <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 12a9 9 0 11-6.219-8.562" strokeLinecap="round" />
+              </svg>
+            ) : (
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                <circle cx="8.5" cy="8.5" r="1.5" />
+                <path d="M21 15l-5-5L5 21" />
+              </svg>
+            )}
+          </button>
+          {/* Image attachment preview thumbnails */}
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 shrink-0">
+              {attachments.map((att) => (
+                <div key={att.url} className="relative group w-16 h-16 rounded-lg overflow-hidden border border-[var(--color-border-dim)]">
+                  <img src={att.url} alt={att.name} className="w-full h-full object-cover" />
+                  <button
+                    onClick={() => handleRemoveAttachment(att.url)}
+                    className="absolute top-0 right-0 w-5 h-5 flex items-center justify-center
+                               bg-[var(--color-error)] text-white rounded-bl-lg
+                               opacity-0 group-hover:opacity-100 transition-opacity"
+                    aria-label="移除图片"
+                    type="button"
+                  >
+                    <svg className="w-3 h-3" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                      <path d="M5 5l10 10M15 5L5 15" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <textarea
             ref={textareaRef}
             value={input}
             onChange={handleInput}
+            onPaste={handlePaste}
             onCompositionStart={() => { composingRef.current = true; }}
             onCompositionEnd={(e) => {
               composingRef.current = false;
@@ -171,10 +281,10 @@ export function NewChatPage() {
           />
           <button
             onClick={handleSend}
-            disabled={!hasContent}
+            disabled={!canSend}
             className={`flex items-center justify-center w-10 h-10 rounded-xl
                        transition-all duration-200
-                       ${hasContent
+                       ${canSend
                          ? "bg-[var(--color-primary)] text-[var(--color-surface-dark)] shadow-[var(--glow-primary)] hover:bg-[var(--color-primary-hover)] active:scale-95"
                          : "bg-[var(--color-surface-raised)] text-[var(--color-text-tertiary)] cursor-not-allowed"
                        }`}

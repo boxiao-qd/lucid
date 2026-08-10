@@ -149,15 +149,13 @@ OPENAI_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 OPENAI_API_KEYS=["sk-your-api-key-here"]
 
 # ── 模型名称 ──
-DEFAULT_MODEL=deepseek-v4-pro          # Agent 默认使用的模型
-DEFAULT_DELEGATE_MODEL=deepseek-v4-pro # 子智能体使用的模型
-COMPRESS_MODEL=deepseek-v4-pro         # 上下文压缩使用的模型
+DEFAULT_MODEL=deepseek-v4-pro          # 主模型：对话/推理/规划/执行
+COMPRESS_MODEL=deepseek-v4-pro         # 辅助模型：压缩/蒸馏/查询改写/cron 解析
+COMPRESS_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1  # 辅助模型 API 入口（独立配置）
+COMPRESS_API_KEY=sk-your-api-key-here                                # 辅助模型 API Key（独立配置）
 
 # ── 可用模型列表（JSON 数组）──
 AVAILABLE_MODELS=["deepseek-v4-pro"]
-
-# ── 模型降级链（JSON 对象，当前模型不可用时自动切换）──
-FALLBACK_CHAIN={"deepseek-v4-pro":[]}
 ```
 
 #### 2.2 Embedding 模型配置（可选，用于记忆搜索增强）

@@ -18,6 +18,7 @@ class MessageDAO(BaseDAO):
         tool_result: str | None = None,
         reasoning_content: str | None = None,
         token_count: int = 0,
+        attachments: str | None = None,
     ) -> MessageModel:
         session = self._session()
         obj = MessageModel(
@@ -32,6 +33,7 @@ class MessageDAO(BaseDAO):
             tool_result=tool_result,
             reasoning_content=reasoning_content,
             token_count=token_count,
+            attachments=attachments,
         )
         session.add(obj)
         await session.commit()

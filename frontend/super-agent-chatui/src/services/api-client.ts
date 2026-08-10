@@ -80,6 +80,25 @@ export async function apiUploadBinary<T>(path: string, body: Uint8Array, content
   return resp.json();
 }
 
+export async function apiUploadFile<T>(path: string, file: File): Promise<T> {
+  const h: Record<string, string> = {};
+  if (accessToken) h["Authorization"] = `Bearer ${accessToken}`;
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const resp = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: h,
+    body: formData,
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ message: "Request failed" }));
+    throw new Error(err.detail || err.message || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
 // Auth API calls (no Bearer token needed)
 export async function authPost<T>(path: string, body: Record<string, unknown>): Promise<T> {
   const resp = await fetch(`${AUTH_BASE}${path}`, {

@@ -126,6 +126,7 @@ async def compress_if_needed(employee_id: int, session_id: str, force: bool = Fa
                 {"role": "user", "content": middle_text},
             ],
             stream=False,
+            use_compress=True,
         )
         summary = response.choices[0].message.content
     except Exception as exc:

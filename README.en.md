@@ -161,15 +161,13 @@ OPENAI_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 OPENAI_API_KEYS=["sk-your-api-key-here"]
 
 # ── Model Names ──
-DEFAULT_MODEL=deepseek-v4-pro          # Default model for the agent
-DEFAULT_DELEGATE_MODEL=deepseek-v4-pro # Model for sub-agents
-COMPRESS_MODEL=deepseek-v4-pro         # Model for context compression
+DEFAULT_MODEL=deepseek-v4-pro          # Main model: conversation/reasoning/planning/execution
+COMPRESS_MODEL=deepseek-v4-pro         # Auxiliary model: compression/distill/query-rewrite/cron-parsing
+COMPRESS_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1  # Auxiliary model API endpoint (independent config)
+COMPRESS_API_KEY=sk-your-api-key-here                                # Auxiliary model API key (independent config)
 
 # ── Available Models (JSON array) ──
 AVAILABLE_MODELS=["deepseek-v4-pro"]
-
-# ── Model Fallback Chain (JSON object, auto-switch when model is unavailable) ──
-FALLBACK_CHAIN={"deepseek-v4-pro":[]}
 ```
 
 #### 2.2 Embedding Model Configuration (Optional, for enhanced memory search)

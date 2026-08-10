@@ -3,7 +3,7 @@ from starlette.requests import Request
 from app.responses import UnicodeJSONResponse
 from app.auth.jwt_utils import decode_access_token
 
-_PUBLIC_PREFIXES = ("/auth/", "/v1/internal/")
+_PUBLIC_PREFIXES = ("/auth/", "/v1/internal/", "/v1/files/attachment")
 _PROTECTED_PREFIXES = ("/v1/",)
 
 

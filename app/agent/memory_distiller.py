@@ -201,6 +201,7 @@ class MemoryDistiller:
                 model=settings.compress_model,
                 messages=[{"role": "user", "content": prompt}],
                 stream=False,
+                use_compress=True,
             )
             raw = response.choices[0].message.content.strip()
         except Exception as e:
@@ -345,6 +346,7 @@ class MemoryDistiller:
                 model=settings.compress_model,
                 messages=[{"role": "user", "content": prompt}],
                 stream=False,
+                use_compress=True,
             )
             raw = response.choices[0].message.content.strip()
         except Exception as e:

@@ -1,4 +1,4 @@
-"""LLM Router — OpenAI-compatible multi-model routing with key rotation and fallback."""
+"""LLM Router — OpenAI-compatible routing with key rotation."""
 
 import httpx
 from openai import AsyncOpenAI, APIError, APITimeoutError
@@ -46,8 +46,13 @@ class LLMRouter:
         self._keys = settings.openai_api_keys or []
         self._key_index = 0
 
-    def _get_client(self, api_key: str = "") -> AsyncOpenAI:
-        key = api_key or (self._keys[self._key_index % len(self._keys)] if self._keys else "")
+    def _get_client(self, api_key: str = "", *, use_compress: bool = False) -> AsyncOpenAI:
+        if use_compress:
+            base = settings.compress_api_base or settings.openai_api_base
+            key = settings.compress_api_key or (self._keys[self._key_index % len(self._keys)] if self._keys else "")
+        else:
+            base = settings.openai_api_base
+            key = api_key or (self._keys[self._key_index % len(self._keys)] if self._keys else "")
         # Use per-phase httpx timeouts:
         # - connect: short (15s) — fast fail if host is unreachable
         # - read: matches sse_ingress_timeout_seconds — streaming chunks can arrive slowly
@@ -60,7 +65,7 @@ class LLMRouter:
             write=30.0,
             pool=10.0,
         )
-        return AsyncOpenAI(api_key=key, base_url=settings.openai_api_base, timeout=timeout)
+        return AsyncOpenAI(api_key=key, base_url=base, timeout=timeout)
 
     def _rotate_key(self):
         if self._keys:
@@ -72,42 +77,47 @@ class LLMRouter:
         messages: list[dict],
         tools: list[dict] | None = None,
         stream: bool = True,
+        *,
+        use_compress: bool = False,
     ) -> object:
-        """Call LLM with key rotation and model fallback on failure."""
-        last_error = None
-        models_to_try = [model] + settings.fallback_chain.get(model, [])
+        """Call LLM with key rotation on failure.
 
-        for try_model in models_to_try:
-            for key_attempt in range(min(len(self._keys), 3) if self._keys else 1):
-                try:
-                    client = self._get_client()
-                    response = await client.chat.completions.create(
-                        model=try_model,
-                        messages=messages,
-                        tools=tools,
-                        stream=stream,
-                    )
-                    return response
-                except (APITimeoutError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
-                    last_error = e
-                    log.warning("LLM timeout for model=%s, key_attempt=%d: %s",
-                                try_model, key_attempt, type(e).__name__)
+        use_compress=True routes through the auxiliary model's API endpoint
+        (compress_api_base / compress_api_key), falling back to the main
+        model's endpoint when those are unset.
+        """
+        last_error = None
+
+        for key_attempt in range(min(len(self._keys), 3) if self._keys else 1):
+            try:
+                client = self._get_client(use_compress=use_compress)
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                    stream=stream,
+                )
+                return response
+            except (APITimeoutError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+                last_error = e
+                log.warning("LLM timeout for model=%s, key_attempt=%d: %s",
+                            model, key_attempt, type(e).__name__)
+                self._rotate_key()
+            except APIError as e:
+                last_error = e
+                if _is_context_overflow(e):
+                    raise ContextOverflowError(
+                        f"Context overflow detected for model={model}: {e}", original_error=e
+                    ) from e
+                if e.status_code in (401, 403):
+                    log.warning("LLM auth error, rotating key")
                     self._rotate_key()
-                except APIError as e:
-                    last_error = e
-                    if _is_context_overflow(e):
-                        raise ContextOverflowError(
-                            f"Context overflow detected for model={try_model}: {e}", original_error=e
-                        ) from e
-                    if e.status_code in (401, 403):
-                        log.warning("LLM auth error, rotating key")
-                        self._rotate_key()
-                    elif e.status_code == 429:
-                        log.warning("LLM rate limited, rotating key")
-                        self._rotate_key()
-                    else:
-                        log.warning("LLM API error: %s", e)
-                        break
+                elif e.status_code == 429:
+                    log.warning("LLM rate limited, rotating key")
+                    self._rotate_key()
+                else:
+                    log.warning("LLM API error: %s", e)
+                    break
 
         from app.middleware.error_handler import AppError
         raise AppError("BX_AGENT_7001", f"LLM unavailable: {last_error}", 503)

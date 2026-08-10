@@ -19,6 +19,7 @@ from app.agent.tools import get_tool_definitions, get_tool_executor
 from app.agent.context_loader import ContextLoader
 from app.agent.context_compressor import compress_if_needed, reset_circuit_breaker
 from app.agent.llm_router import ContextOverflowError
+from app.agent.vision_recognizer import VisionRecognizer
 from app.agent.tools.todo_write import get_session_todos, todo_summary_for_llm, force_complete_todos
 from app.agent.task_manager import (
     register_run, unregister_run, cancel_run, get_active_run,
@@ -90,7 +91,7 @@ class AgentService:
         self._tool_results: dict[str, str] = {}
         self._context_loader = ContextLoader(employee_id, self._session_factory)
 
-    async def process_message(self, session_id: str, content: str, role: str = "user", user_msg_id: str | None = None) -> str:
+    async def process_message(self, session_id: str, content: str, role: str = "user", user_msg_id: str | None = None, attachments: list | None = None) -> str:
         sid = session_id[:8]
         log.info("[%s] 收到消息 — role=%s 长度=%d 预览=%r",
                  sid, role, len(content), content[:80])
@@ -158,6 +159,25 @@ class AgentService:
         # ── Register this run for cancel/steer coordination ──
         assistant_id = str(time.time_ns())
         run_handle = register_run(session_id, assistant_id)
+
+        # ── Multimodal recognition: recognize images before agent loop ──
+        image_urls = [a["url"] for a in (attachments or []) if a.get("type", "image") == "image" and a.get("url")]
+        if image_urls:
+            push_event(session_id, SSEEventType.vision_start, {"image_count": len(image_urls)})
+            try:
+                recognizer = VisionRecognizer()
+                vision_text = await recognizer.recognize(image_urls)
+                push_event(session_id, SSEEventType.vision_done, {
+                    "preview": vision_text[:200], "length": len(vision_text),
+                })
+                # Prepend recognition result to the in-memory user message (DB keeps original content)
+                augmented = f"[图片识别结果]\n{vision_text}\n\n[用户消息]\n{content}"
+                if history:
+                    history[-1].content = augmented
+                log.info("[%s] 视觉识别完成 — %d 张图片 → %d 字符", sid, len(image_urls), len(vision_text))
+            except Exception as e:
+                log.warning("[%s] 视觉识别失败，降级为纯文本: %s", sid, e)
+                push_event(session_id, SSEEventType.vision_error, {"message": str(e)[:200]})
 
         llm_messages = await self._build_llm_messages(session, history)
         base_system_prompt = llm_messages[0]["content"] if llm_messages and llm_messages[0]["role"] == "system" else ""

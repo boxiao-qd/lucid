@@ -1,11 +1,11 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { apiGet, apiPost } from "@/services/api-client";
+import { apiGet, apiPost, apiUploadFile } from "@/services/api-client";
 import { useMessageStore } from "@/store/message-store";
 import { useSkillList } from "@/hooks/useSkillList";
 import { useSkillPicker } from "@/hooks/useSkillPicker";
 import { SkillPicker } from "@/components/base/SkillPicker";
 import { QueueList, type QueueItem } from "@/components/section/QueueList";
-import type { SkillItem } from "@/types/api-types";
+import type { SkillItem, Attachment } from "@/types/api-types";
 
 interface ChatInputSectionProps {
   sessionId: string;
@@ -14,8 +14,11 @@ interface ChatInputSectionProps {
 export function ChatInputSection({ sessionId }: ChatInputSectionProps) {
   const [input, setInput] = useState("");
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(false);
   const composingRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const appendMessage = useMessageStore((s) => s.appendMessage);
   const clearPlan = useMessageStore((s) => s.clearPlan);
   const isStreaming = useMessageStore((s) => s.streamingMessageId !== null);
@@ -52,10 +55,38 @@ export function ChatInputSection({ sessionId }: ChatInputSectionProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStreaming]);
 
+  const handleUploadImage = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setUploading(true);
+    try {
+      for (const file of Array.from(files)) {
+        if (!file.type.startsWith("image/")) continue;
+        const resp = await apiUploadFile<{ url: string; name: string; type: string }>("/files/upload-image", file);
+        setAttachments((prev) => [...prev, { url: resp.url, name: resp.name, type: "image" }]);
+      }
+    } catch (err) {
+      const store = useMessageStore.getState();
+      store.setTaskNotice(`图片上传失败：${(err as Error).message}`);
+      window.setTimeout(() => store.clearTaskNotice(), 3000);
+    } finally {
+      setUploading(false);
+      // Reset file input so same file can be re-selected
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }, []);
+
+  const handleRemoveAttachment = useCallback((url: string) => {
+    setAttachments((prev) => prev.filter((a) => a.url !== url));
+  }, []);
+
   const handleSend = useCallback(async () => {
-    if (!input.trim()) return;
+    if (!input.trim() && attachments.length === 0) return;
     const content = input.trim();
+    const pendingAttachments = attachments;
     setInput("");
+    setAttachments([]);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
     // Agent 在跑 — 入 followup 队列（用户可在 queue 列表点 steer 显式提升）
@@ -83,11 +114,12 @@ export function ChatInputSection({ sessionId }: ChatInputSectionProps) {
       content,
       token_count: 0,
       is_compressed: false,
+      attachments: pendingAttachments.length > 0 ? pendingAttachments : undefined,
       created_at: new Date().toISOString(),
     });
 
-    await apiPost("/messages", { session_id: sessionId, content });
-  }, [input, sessionId, appendMessage, clearPlan, isStreaming]);
+    await apiPost("/messages", { session_id: sessionId, content, attachments: pendingAttachments });
+  }, [input, attachments, sessionId, appendMessage, clearPlan, isStreaming]);
 
   const handleSteer = useCallback(async (content: string) => {
     // Call backend steer; backend dedupes matching content from the queue.
@@ -139,6 +171,34 @@ export function ChatInputSection({ sessionId }: ChatInputSectionProps) {
     picker.onInputChange(value, el.selectionStart ?? value.length, composingRef.current);
   }, [picker]);
 
+  // Paste image from clipboard
+  const handlePaste = useCallback(async (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imageFiles: File[] = [];
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) imageFiles.push(file);
+      }
+    }
+    if (imageFiles.length === 0) return;
+    e.preventDefault();
+    setUploading(true);
+    try {
+      for (const file of imageFiles) {
+        const resp = await apiUploadFile<{ url: string; name: string; type: string }>("/files/upload-image", file);
+        setAttachments((prev) => [...prev, { url: resp.url, name: resp.name, type: "image" }]);
+      }
+    } catch (err) {
+      const store = useMessageStore.getState();
+      store.setTaskNotice(`粘贴图片上传失败：${(err as Error).message}`);
+      window.setTimeout(() => store.clearTaskNotice(), 3000);
+    } finally {
+      setUploading(false);
+    }
+  }, []);
+
   const insertSkill = useCallback((skill: SkillItem) => {
     const textarea = textareaRef.current;
     if (!textarea) return;
@@ -172,8 +232,8 @@ export function ChatInputSection({ sessionId }: ChatInputSectionProps) {
     });
   }, [input, picker]);
 
-  const hasContent = input.trim().length > 0;
-  const canSend = hasContent;
+  const hasContent = input.trim().length > 0 || attachments.length > 0;
+  const canSend = hasContent && !uploading;
 
   return (
     <div className="px-4 pb-4 pt-2 relative" role="form" aria-label="消息输入">
@@ -193,10 +253,65 @@ export function ChatInputSection({ sessionId }: ChatInputSectionProps) {
           <span className="truncate">{taskNotice}</span>
         </div>
       )}
+      {/* Image attachment preview thumbnails */}
+      {attachments.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-2 px-1">
+          {attachments.map((att) => (
+            <div key={att.url} className="relative group w-16 h-16 rounded-lg overflow-hidden border border-[var(--color-border-dim)]">
+              <img src={att.url} alt={att.name} className="w-full h-full object-cover" />
+              <button
+                onClick={() => handleRemoveAttachment(att.url)}
+                className="absolute top-0 right-0 w-5 h-5 flex items-center justify-center
+                           bg-[var(--color-error)] text-white rounded-bl-lg
+                           opacity-0 group-hover:opacity-100 transition-opacity"
+                aria-label="移除图片"
+                type="button"
+              >
+                <svg className="w-3 h-3" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <path d="M5 5l10 10M15 5L5 15" />
+                </svg>
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <div
         className="glass rounded-xl p-3 glow-primary flex items-end gap-3 transition-shadow"
         style={{ boxShadow: canSend ? "var(--glow-primary)" : "none" }}
       >
+        {/* Image upload button */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={handleUploadImage}
+        />
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading || isStreaming}
+          className="flex items-center justify-center w-9 h-9 rounded-lg shrink-0
+                     bg-[var(--color-surface-dark)] text-[var(--color-text-secondary)]
+                     hover:bg-[var(--color-border-dim)] hover:text-[var(--color-primary)]
+                     active:scale-95 transition-all duration-200
+                     disabled:opacity-50 disabled:cursor-not-allowed"
+          aria-label="上传图片"
+          type="button"
+          title="上传图片（或直接粘贴）"
+        >
+          {uploading ? (
+            <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M21 12a9 9 0 11-6.219-8.562" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <path d="M21 15l-5-5L5 21" />
+            </svg>
+          )}
+        </button>
         <textarea
           ref={textareaRef}
           value={input}
@@ -208,6 +323,7 @@ export function ChatInputSection({ sessionId }: ChatInputSectionProps) {
             const el = e.currentTarget;
             picker.onInputChange(el.value, el.selectionStart ?? el.value.length, false);
           }}
+          onPaste={handlePaste}
           onKeyDown={(e) => {
             if (picker.open) {
               if (e.key === "ArrowDown") { e.preventDefault(); picker.moveDown(); return; }

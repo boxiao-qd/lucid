@@ -244,6 +244,7 @@ class ContextLoader:
                 model=settings.compress_model,
                 messages=[{"role": "user", "content": prompt}],
                 stream=False,
+                use_compress=True,
             )
             query = response.choices[0].message.content.strip()
             return query[:200] or context_text[:200]

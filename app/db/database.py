@@ -97,6 +97,19 @@ async def _run_column_migrations():
                 ))
                 await session.commit()
 
+            # Add attachments column to messages if missing (multimodal support)
+            result = await session.execute(text(
+                "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() "
+                "  AND TABLE_NAME = 'messages' "
+                "  AND COLUMN_NAME = 'attachments'"
+            ))
+            if result.scalar() == 0:
+                await session.execute(text(
+                    "ALTER TABLE messages ADD COLUMN attachments TEXT NULL"
+                ))
+                await session.commit()
+
         elif is_sqlite:
             result = await session.execute(text("PRAGMA table_info(notifications)"))
             cols = {row[1] for row in result.fetchall()}
@@ -117,6 +130,15 @@ async def _run_column_migrations():
             if "consecutive_errors" not in cols:
                 await session.execute(text(
                     "ALTER TABLE cron_jobs ADD COLUMN consecutive_errors INT DEFAULT 0"
+                ))
+                await session.commit()
+
+            # Add attachments column to messages if missing (multimodal support)
+            result = await session.execute(text("PRAGMA table_info(messages)"))
+            cols = {row[1] for row in result.fetchall()}
+            if "attachments" not in cols:
+                await session.execute(text(
+                    "ALTER TABLE messages ADD COLUMN attachments TEXT NULL"
                 ))
                 await session.commit()
 

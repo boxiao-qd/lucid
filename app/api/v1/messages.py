@@ -22,11 +22,23 @@ async def send_message(
 ):
     # Save message and trigger agent conversation loop in background
     dao = MessageDAO(get_session_factory(), employee_id)
-    msg = await dao.create(session_id=req.session_id, role=req.role.value, content=req.content)
+    attachments_json = json.dumps([a.model_dump() for a in req.attachments]) if req.attachments else None
+    msg = await dao.create(
+        session_id=req.session_id,
+        role=req.role.value,
+        content=req.content,
+        attachments=attachments_json,
+    )
 
     # Kick off agent processing in background — SSE will stream events
     agent = AgentService(employee_id)
-    task = asyncio.create_task(agent.process_message(req.session_id, req.content, req.role.value, user_msg_id=msg.id))
+    task = asyncio.create_task(
+        agent.process_message(
+            req.session_id, req.content, req.role.value,
+            user_msg_id=msg.id,
+            attachments=[a.model_dump() for a in req.attachments] if req.attachments else None,
+        )
+    )
 
     def _on_agent_done(t: asyncio.Task):
         exc = t.exception() if not t.cancelled() else None
@@ -54,7 +66,9 @@ async def get_message_history(
                 tool_calls=json.loads(m.tool_calls) if m.tool_calls else None,
                 tool_name=m.tool_name, tool_call_id=m.tool_call_id,
                 reasoning_content=m.reasoning_content, token_count=m.token_count,
-                is_compressed=bool(m.is_compressed), created_at=m.created_at,
+                is_compressed=bool(m.is_compressed),
+                attachments=json.loads(m.attachments) if m.attachments else None,
+                created_at=m.created_at,
             )
             for m in messages
         ],

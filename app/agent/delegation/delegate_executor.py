@@ -55,8 +55,8 @@ class DelegateExecutor:
         all_tool_defs = get_tool_definitions("child")
         tool_defs = filter_tools_for_agent(all_tool_defs, agent_def)
 
-        # Determine model
-        model = agent_def.model if agent_def.model and agent_def.model != "inherit" else settings.default_delegate_model
+        # Determine model (sub-agent may override via AGENT.md; default to main model)
+        model = agent_def.model if agent_def.model and agent_def.model != "inherit" else settings.default_model
         max_turns = agent_def.max_turns
 
         delegation_id = str(uuid.uuid4())[:8]

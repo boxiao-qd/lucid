@@ -32,6 +32,10 @@ class SSEEventType(str, Enum):
     task_cancelled = "task_cancelled"
     task_queued = "task_queued"
     task_steered = "task_steered"
+    # Multimodal vision recognition (before agent loop)
+    vision_start = "vision_start"
+    vision_done = "vision_done"
+    vision_error = "vision_error"
 
 
 class SSEEventEnvelope(BaseModel):

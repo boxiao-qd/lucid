@@ -15,10 +15,10 @@ class Settings(BaseSettings):
     openai_api_keys: list[str] = []
     # Model configuration
     default_model: str = "MiniMax-M2"
-    default_delegate_model: str = "MiniMax-M2"
     compress_model: str = "MiniMax-M2"
+    compress_api_base: str = ""    # env: COMPRESS_API_BASE — falls back to openai_api_base
+    compress_api_key: str = ""     # env: COMPRESS_API_KEY — falls back to openai_api_keys[0]
     available_models: list[str] = ["MiniMax-M2"]
-    fallback_chain: dict[str, list[str]] = {"MiniMax-M2": []}
     # Web tools
     web_search_backend: str = ""  # "bing_cn" | "ddgs" | "" (auto-detect)
     bing_cn_url: str = "https://cn.bing.com"  # Bing CN base URL, overridable for proxy
@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     embedding_api_base: str = ""                        # env: EMBEDDING_API_BASE — falls back to openai_api_base
     embedding_api_key: str = ""                         # env: EMBEDDING_API_KEY — falls back to openai_api_keys[0]
     embedding_dim: int = 1536                           # env: EMBEDDING_DIM
+
+    # Vision (multimodal image recognition)
+    vision_model: str = ""                              # env: VISION_MODEL
+    vision_api_base: str = ""                           # env: VISION_API_BASE
+    vision_api_key: str = ""                            # env: VISION_API_KEY
 
     # Memory Distiller
     memory_distill_enabled: bool = True                 # env: MEMORY_DISTILL_ENABLED
@@ -117,7 +122,7 @@ class Settings(BaseSettings):
             return 500
         return v
 
-    @field_validator("es_hosts", "openai_api_keys", "available_models", "fallback_chain", "cors_allow_origins", mode="before")
+    @field_validator("es_hosts", "openai_api_keys", "available_models", "cors_allow_origins", mode="before")
     @classmethod
     def parse_json_or_csv(cls, v):
         if isinstance(v, str):

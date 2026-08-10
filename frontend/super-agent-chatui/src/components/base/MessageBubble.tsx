@@ -1,4 +1,5 @@
 import { memo, useCallback, useState } from "react";
+import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -25,6 +26,7 @@ export const MessageBubble = memo(function MessageBubble({ message, thinkingBloc
   const toggleToolCall = useMessageStore((s) => s.toggleToolCall);
 
   const [staticThinkingExpanded, setStaticThinkingExpanded] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   const effectiveThinkingBlock = thinkingBlock ?? (
     message.reasoning_content
@@ -46,13 +48,53 @@ export const MessageBubble = memo(function MessageBubble({ message, thinkingBloc
 
   /* ── User message: bold accent bubble ──────────────────────────── */
   if (isUser) {
+    const images = (message.attachments ?? []).filter((a) => a.type === "image");
     return (
       <div className="flex justify-end" role="article" aria-label="用户消息">
         <div className="rounded-lg px-4 py-3 max-w-[80%] md:max-w-[80%] text-sm
                        bg-[var(--color-primary)] text-[var(--color-surface-dark)]
                        shadow-[var(--glow-primary)]">
-          <p className="leading-relaxed">{message.content}</p>
+          {images.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-2">
+              {images.map((img) => (
+                <img
+                  key={img.url}
+                  src={img.url}
+                  alt={img.name || "附件图片"}
+                  className="w-32 h-32 object-cover rounded-md border border-[var(--color-border-dim)]
+                             cursor-zoom-in transition-transform hover:scale-105"
+                  loading="lazy"
+                  onClick={() => setPreviewUrl(img.url)}
+                />
+              ))}
+            </div>
+          )}
+          <p className="leading-relaxed whitespace-pre-wrap">{message.content}</p>
         </div>
+        {previewUrl && createPortal(
+          <div
+            className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 backdrop-blur-sm animate-fade-in"
+            onClick={() => setPreviewUrl(null)}
+          >
+            <img
+              src={previewUrl}
+              alt="图片预览"
+              className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            />
+            <button
+              className="absolute top-4 right-4 w-10 h-10 flex items-center justify-center
+                         rounded-full bg-white/10 text-white text-xl
+                         hover:bg-white/20 transition-colors"
+              onClick={() => setPreviewUrl(null)}
+              aria-label="关闭预览"
+              type="button"
+            >
+              &times;
+            </button>
+          </div>,
+          document.body
+        )}
       </div>
     );
   }

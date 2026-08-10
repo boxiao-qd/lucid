@@ -119,6 +119,7 @@ async def _schedule_to_cron(schedule: str) -> str:
             {"role": "user", "content": schedule},
         ],
         stream=False,
+        use_compress=True,
     )
     cron_expr = response.choices[0].message.content.strip()
     # Remove any surrounding quotes or backticks the LLM might add

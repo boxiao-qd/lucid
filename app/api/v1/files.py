@@ -2,9 +2,10 @@
 
 import logging
 import os
+import uuid
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import Response, StreamingResponse
 
 from app.config import settings
@@ -27,6 +28,69 @@ def _s3_client():
     if settings.object_storage_endpoint:
         kw["endpoint_url"] = settings.object_storage_endpoint
     return boto3.client("s3", **kw)
+
+
+@router.post("/upload-image")
+async def upload_image(
+    file: UploadFile = File(...),
+    employee_id: int = Depends(get_employee_id),
+):
+    """Upload a chat image attachment to MinIO. Returns the public URL."""
+    # Validate content type
+    ct = file.content_type or ""
+    if not ct.startswith("image/"):
+        raise HTTPException(status_code=415, detail=f"Only image/* files are accepted, got: {ct}")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    # 10 MB limit
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Image too large (max 10 MB)")
+
+    ext = os.path.splitext(file.filename or "")[1].lower() or ".jpg"
+    key = f"chat-attachments/{employee_id}/{uuid.uuid4()}{ext}"
+
+    bucket = settings.object_storage_bucket
+    try:
+        s3 = _s3_client()
+        s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType=ct)
+    except Exception as e:
+        log.error("MinIO upload failed for key %s: %s", key, e)
+        raise HTTPException(status_code=502, detail="Failed to upload image to storage")
+
+    # Return a proxy URL (relative) so the browser can access the image
+    # through the API without needing public MinIO bucket access.
+    # The key contains a UUID and serves as an unguessable capability token.
+    proxy_url = f"/bx/api/v1/files/attachment?key={quote(key, safe='')}"
+
+    return {"url": proxy_url, "name": file.filename or "image" + ext, "type": "image"}
+
+
+@router.get("/attachment")
+async def get_attachment(key: str):
+    """Serve a chat image from MinIO by key.
+
+    No Bearer auth required — the key contains a UUID and serves as a
+    capability token (unguessable). This lets <img src> tags load images
+    without custom auth headers.
+    """
+    # Only allow chat-attachment keys to prevent accessing other MinIO objects
+    if not key.startswith("chat-attachments/"):
+        raise HTTPException(status_code=403, detail="Invalid attachment key")
+
+    bucket = settings.object_storage_bucket
+    try:
+        s3 = _s3_client()
+        resp = s3.get_object(Bucket=bucket, Key=key)
+        data = resp["Body"].read()
+        content_type = resp.get("ContentType", "image/jpeg")
+    except Exception as e:
+        log.warning("Attachment read failed for key %s: %s", key, e)
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    return Response(content=data, media_type=content_type)
 
 
 @router.get("")
