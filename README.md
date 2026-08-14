@@ -293,7 +293,7 @@ docker logs -f scheduler-worker
 - 邮箱：[1668703867@qq.com](mailto:1668703867@qq.com)
 - 欢迎反馈问题、提出建议或交流技术。
 
-## License
+## 项目结构
 
 ```
 SaaSClaw/
@@ -316,7 +316,7 @@ SaaSClaw/
 
 ## License
 
-Proprietary. All rights reserved.
+本项目基于 [MIT License](LICENSE) 开源。
 
 ---
 

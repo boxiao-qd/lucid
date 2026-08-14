@@ -328,7 +328,7 @@ SaaSClaw/
 
 ## License
 
-Proprietary. All rights reserved.
+This project is open-sourced under the [MIT License](LICENSE).
 
 ---
 
