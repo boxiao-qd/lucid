@@ -8,32 +8,54 @@ import time
 from pathlib import Path
 
 from app.config import settings
-from app.agent.tools.command_filter import filter_command
+from app.agent.tools.saas_path_guard import _check_write_allowed
 
-# Detect shell commands that create or write files under /tmp/ or /var/tmp/.
-# minio_project.py creates its own /dev/shm scratchpad internally (not via terminal),
-# so this pattern does NOT block legitimate internal usage.
-_TMP_WRITE_RE = re.compile(
+# Detect file-writing commands in shell, capturing the target path.
+# For cp/mv/install/rsync/ln, the destination is the last path argument
+# (regex uses lookahead to ensure the path is followed by end/pipe/semicolon).
+# For tar, the target is the path after -C/--directory.
+# For dd, the target is the path after of=.
+# For sed, only -i (in-place) mode is a write — the expression in quotes is
+# skipped, and the file path after it is captured.
+# For curl/wget, the target is the path after -o/-O/--output/--output-document.
+# Each alternative uses an unnamed capture group; _check_terminal_write_allowed
+# extracts the first non-None group from each match.
+_WRITE_RE = re.compile(
     r"""
     (?:
-        \bmkdir\b[^|&;\n]*?/(?:tmp|var/tmp)/   # mkdir /tmp/... or mkdir -p /tmp/...
-      | \btouch\b[^|&;\n]*?/(?:tmp|var/tmp)/   # touch /tmp/...
-      | \bcp\b[^|&;\n]*?/(?:tmp|var/tmp)/      # cp ... /tmp/...
-      | \bmv\b[^|&;\n]*?/(?:tmp|var/tmp)/      # mv ... /tmp/...
-      | >[^>]?[^|&;\n]*?/(?:tmp|var/tmp)/      # > /tmp/... or >> /tmp/...
-      | \btee\b[^|&;\n]*?/(?:tmp|var/tmp)/     # tee /tmp/...
+        \bmkdir\b[^|&;\n]*?(/[^\s|;&]+)
+      | \btouch\b[^|&;\n]*?(/[^\s|;&]+)
+      | \b(?:cp|mv|install|rsync|ln)\b[^|&;\n]*?(/[^\s|;&]+)(?=\s*(?:[|;&\n]|$))
+      | >(?:>)?\s*(/[^\s|;&]+)
+      | \btee\b[^|&;\n]*?(/[^\s|;&]+)
+      | \bdd\b[^|&;\n]*?\bof=(\S+)
+      | \bsed\b[^|;\n]*?-i[^|;\n]*?(?:'[^']*'|"[^"]*")\s+(/[^\s|;&]+)
+      | \btar\b[^|;\n]*(?:-C|--directory)\s+(\S+)
+      | \b(?:curl|wget)\b[^|;\n]*?(?:--output-document|-o|--output)(?:=|\s+)(/[^\s|;&]+)
     )
     """,
     re.VERBOSE | re.IGNORECASE,
 )
 
-_TMP_WRITE_DENIAL = (
-    "Writing to /tmp/ or /var/tmp/ is FORBIDDEN. "
-    "All project files must be stored in MinIO. "
-    "Use: python3 ${SKILL_DIR}/scripts/minio_project.py write-file "
-    '--prefix "$PROJECT_PREFIX" <rel_path> (with heredoc for large content). '
-    "If MinIO is unreachable, report the error to the user and stop the task."
+_WRITE_DENIED_MSG = (
+    "Writing to paths outside tmp-doc/ is FORBIDDEN. "
+    "File writes via terminal must target tmp-doc/. "
+    "Use file_write tool for direct file creation. "
+    "For final deliverables, use create_artifact to upload to MinIO."
 )
+
+
+def _check_terminal_write_allowed(command: str) -> str | None:
+    """Check if a terminal command writes to paths outside tmp-doc/.
+
+    Returns None if all writes target tmp-doc/ or no writes detected.
+    Returns the blocked path string if a write targets outside tmp-doc/.
+    """
+    for match in _WRITE_RE.finditer(command):
+        target = next((g for g in match.groups() if g), None)
+        if target and not _check_write_allowed(target):
+            return target
+    return None
 
 
 _PROJECT_ROOT   = str(Path(__file__).resolve().parents[3])
@@ -83,9 +105,8 @@ TOOL_DEF = {
             "Use `background=true` for long-running processes (servers, builds); use `process` tool "
             "to manage background sessions. Do NOT use terminal for reading/editing files — use "
             "file_read / file_write / patch instead. Prefer foreground for short commands. "
-            "In SaaS mode, terminal is restricted to a whitelist of read-only, non-file-operation "
-            "commands only. File-writing commands (rm, cp, mv, cat, tee, touch, mkdir, chmod, "
-            "editors, output redirects > / >>) are blocked."
+            "Requires user confirmation before execution. "
+            "Writing files to /tmp/ or /var/tmp/ is blocked."
         ),
         "parameters": {
             "type": "object",
@@ -111,19 +132,14 @@ async def execute(args_str: str, employee_id: int) -> str:
     if not command:
         return json.dumps({"error": "No command provided"}, ensure_ascii=False)
 
-    # Block any command that writes files to /tmp/ or /var/tmp/ — always, not just SaaS mode.
-    if _TMP_WRITE_RE.search(command):
-        return json.dumps({"error": _TMP_WRITE_DENIAL, "blocked": True}, ensure_ascii=False)
-
-    # SaaS mode command filtering
-    if settings.saas_mode:
-        result = filter_command(command)
-        if not result["allowed"]:
-            return json.dumps({
-                "error": f"SaaS mode: command blocked. {result['reason']}. The terminal is restricted to read-only, non-file-operation commands only.",
-                "command": command[:200],
-                "saas_mode": True,
-            }, ensure_ascii=False)
+    # Block file writes to paths outside tmp-doc/ — code-level barrier.
+    blocked_path = _check_terminal_write_allowed(command)
+    if blocked_path:
+        return json.dumps({
+            "error": _WRITE_DENIED_MSG,
+            "blocked": True,
+            "path": blocked_path,
+        }, ensure_ascii=False)
 
     try:
         if background:

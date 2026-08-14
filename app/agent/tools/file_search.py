@@ -5,7 +5,7 @@ import os
 import re
 from pathlib import Path
 
-from app.agent.tools.saas_path_guard import _saas_search_allowed, SAAS_SEARCH_DENIED_MSG
+from app.agent.tools.saas_path_guard import _check_search_allowed, SEARCH_DENIED_MSG
 
 
 def _resolve_path(path: str) -> Path:
@@ -20,7 +20,7 @@ TOOL_DEF = {
     "type": "function",
     "function": {
         "name": "file_search",
-        "description": "List files in a directory or search file contents/filenames. In SaaS mode, only system-config/ and user-config/ paths are searchable.",
+        "description": "List files in a directory or search file contents/filenames. Searchable paths: tmp-doc/ (read-write), sys-infra/ (read-only), scripts/ (read-only).",
         "parameters": {
             "type": "object",
             "properties": {
@@ -46,12 +46,11 @@ async def execute(args_str: str, employee_id: int) -> str:
 
     resolved_path = _resolve_path(search_path)
 
-    # SaaS path whitelist check
-    if not _saas_search_allowed(search_path):
+    # Path whitelist check
+    if not _check_search_allowed(search_path):
         return json.dumps({
-            "error": SAAS_SEARCH_DENIED_MSG.format(path=search_path),
+            "error": SEARCH_DENIED_MSG.format(path=search_path),
             "tool_name": "file_search",
-            "saas_mode": True,
         }, ensure_ascii=False)
 
     if not resolved_path.is_dir():

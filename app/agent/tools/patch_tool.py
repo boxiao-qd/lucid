@@ -5,7 +5,7 @@ import os
 import re
 from pathlib import Path
 
-from app.agent.tools.saas_path_guard import _saas_write_allowed, SAAS_WRITE_DENIED_MSG
+from app.agent.tools.saas_path_guard import _check_write_allowed, WRITE_DENIED_MSG
 
 
 def _fuzzy_find(content: str, old_string: str) -> tuple[int | None, str]:
@@ -102,8 +102,7 @@ TOOL_DEF = {
             "Edit a file by replacing an existing text segment with new text. Uses fuzzy matching "
             "to find the target text — tolerates whitespace, indentation, and formatting differences. "
             "Safer and more targeted than write_file for making changes. Each call can replace one "
-            "text segment. For multiple edits, call patch multiple times. In SaaS mode, only "
-            "user-config/ (user skills/subagents) path is writable."
+            "text segment. For multiple edits, call patch multiple times. Writable path: tmp-doc/ only."
         ),
         "parameters": {
             "type": "object",
@@ -126,12 +125,11 @@ async def execute(args_str: str, employee_id: int) -> str:
     new_string = args.get("new_string", "")
     dry_run = args.get("dry_run", False)
 
-    # SaaS path whitelist check — patch is a write operation
-    if not _saas_write_allowed(path):
+    # Path whitelist check — patch is a write operation
+    if not _check_write_allowed(path):
         return json.dumps({
-            "error": SAAS_WRITE_DENIED_MSG.format(path=path),
+            "error": WRITE_DENIED_MSG.format(path=path),
             "tool_name": "patch",
-            "saas_mode": True,
         }, ensure_ascii=False)
 
     resolved = Path(os.path.realpath(path))

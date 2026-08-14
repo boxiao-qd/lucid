@@ -49,6 +49,7 @@ _BUFFERED_EVENTS = {
     SSEEventType.context_compression,
     SSEEventType.message_done,
     SSEEventType.error,
+    SSEEventType.tool_confirm_request,
 }
 
 # Events whose loss must be logged at WARNING level (everything else → DEBUG).

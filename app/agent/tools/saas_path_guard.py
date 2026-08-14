@@ -1,9 +1,20 @@
-"""SaaS path whitelist validator — restrict file operations to system-config/ and user-config/."""
+"""Path whitelist validator — restrict file operations to tmp-doc/, sys-infra/, scripts/."""
 
 import os
 from pathlib import Path
 
-from app.config import settings
+# Project root: app/agent/tools/ → 3 levels up → project root.
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+# Read whitelist: tmp-doc/ + sys-infra/ + scripts/
+_READ_DIRS = [
+    _PROJECT_ROOT / "tmp-doc",
+    _PROJECT_ROOT / "sys-infra",
+    _PROJECT_ROOT / "scripts",
+]
+
+# Write whitelist: tmp-doc/ only
+_WRITE_DIRS = [_PROJECT_ROOT / "tmp-doc"]
 
 
 def _is_under_dir(real_path: str, dir_path: str) -> bool:
@@ -16,47 +27,32 @@ def _is_under_dir(real_path: str, dir_path: str) -> bool:
     return False
 
 
-def _saas_read_allowed(path: str) -> bool:
-    """In SaaS mode, only allow reads from system-config/ and user-config/."""
-    if not settings.saas_mode:
-        return True
+def _check_read_allowed(path: str) -> bool:
+    """Only allow reads from tmp-doc/, sys-infra/, scripts/."""
     real = os.path.realpath(path)
-    system_dir = os.path.realpath(settings.saas_system_config_dir)
-    user_dir = os.path.realpath(settings.saas_user_config_dir)
-    return _is_under_dir(real, system_dir) or _is_under_dir(real, user_dir)
+    return any(_is_under_dir(real, os.path.realpath(str(d))) for d in _READ_DIRS)
 
 
-def _saas_write_allowed(path: str) -> bool:
-    """In SaaS mode, only allow writes to user-config/."""
-    if not settings.saas_mode:
-        return True
+def _check_write_allowed(path: str) -> bool:
+    """Only allow writes to tmp-doc/."""
     real = os.path.realpath(path)
-    user_dir = os.path.realpath(settings.saas_user_config_dir)
-    return _is_under_dir(real, user_dir)
+    return any(_is_under_dir(real, os.path.realpath(str(d))) for d in _WRITE_DIRS)
 
 
-def _saas_search_allowed(path: str) -> bool:
-    """In SaaS mode, only allow searches within system-config/ and user-config/."""
-    if not settings.saas_mode:
-        return True
+def _check_search_allowed(path: str) -> bool:
+    """Only allow searches within tmp-doc/, sys-infra/, scripts/."""
     real = os.path.realpath(path) if path else os.path.realpath(os.getcwd())
-    system_dir = os.path.realpath(settings.saas_system_config_dir)
-    user_dir = os.path.realpath(settings.saas_user_config_dir)
-    return _is_under_dir(real, system_dir) or _is_under_dir(real, user_dir)
+    return any(_is_under_dir(real, os.path.realpath(str(d))) for d in _READ_DIRS)
 
 
-SAAS_READ_DENIED_MSG = (
-    "SaaS mode: path not in allowed read whitelist. "
-    "Only system-config/ (pre-built skills/hooks/tools, read-only) "
-    "and user-config/ (user skills/subagents, read-write) are accessible."
+READ_DENIED_MSG = (
+    "路径不在允许的白名单内。可读目录：tmp-doc/、sys-infra/、scripts/。可写目录：tmp-doc/。（路径：{path}）"
 )
 
-SAAS_WRITE_DENIED_MSG = (
-    "SaaS mode: path not in allowed write whitelist. "
-    "Only user-config/ (user skills/subagents) is writable."
+WRITE_DENIED_MSG = (
+    "路径不在允许的白名单内。可读目录：tmp-doc/、sys-infra/、scripts/。可写目录：tmp-doc/。（路径：{path}）"
 )
 
-SAAS_SEARCH_DENIED_MSG = (
-    "SaaS mode: search path not in allowed whitelist. "
-    "Only system-config/ and user-config/ directories are searchable."
+SEARCH_DENIED_MSG = (
+    "路径不在允许的白名单内。可读目录：tmp-doc/、sys-infra/、scripts/。可写目录：tmp-doc/。（路径：{path}）"
 )

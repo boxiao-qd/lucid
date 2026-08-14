@@ -24,7 +24,8 @@ export type SSEEventType =
   | "plan_complete"
   | "task_cancelled"
   | "task_queued"
-  | "task_steered";
+  | "task_steered"
+  | "tool_confirm_request";
 
 export interface SSEEventEnvelope {
   type: SSEEventType;
@@ -63,6 +64,14 @@ export interface TaskCancelledData { [key: string]: unknown; run_id: string; rea
 export interface TaskQueuedData { [key: string]: unknown; queue_depth: number; mode: string }
 export interface TaskSteeredData { [key: string]: unknown; run_id: string; content_preview: string }
 
+// Human-in-the-loop tool confirmation (terminal / code_execute)
+export interface ToolConfirmRequestData {
+  confirmation_id: string;
+  tool_name: string;
+  content: string;
+  tool_call_id: string;
+}
+
 export type SSEEventData =
   | TextDeltaData
   | ThinkingStartData
@@ -87,4 +96,5 @@ export type SSEEventData =
   | PlanCompleteData
   | TaskCancelledData
   | TaskQueuedData
-  | TaskSteeredData;
+  | TaskSteeredData
+  | ToolConfirmRequestData;

@@ -57,6 +57,7 @@ async def execute_job(job) -> None:
             session_id=cron_session.id,
             content=job.prompt,
             role="user",
+            is_cron=True,
         )
 
         # Get the last assistant message as result

@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-from app.agent.tools.saas_path_guard import _saas_read_allowed, SAAS_READ_DENIED_MSG
+from app.agent.tools.saas_path_guard import _check_read_allowed, READ_DENIED_MSG
 
 
 def _validate_path(path: str) -> Path:
@@ -18,7 +18,7 @@ TOOL_DEF = {
     "type": "function",
     "function": {
         "name": "file_read",
-        "description": "Read a file's content from the local filesystem. Supports line-based pagination. In SaaS mode, only system-config/ (read-only) and user-config/ (read-write) paths are accessible.",
+        "description": "Read a file's content from the local filesystem. Supports line-based pagination. Accessible paths: tmp-doc/ (read-write), sys-infra/ (read-only), scripts/ (read-only).",
         "parameters": {
             "type": "object",
             "properties": {
@@ -38,12 +38,11 @@ async def execute(args_str: str, employee_id: int) -> str:
     offset = max(1, args.get("offset", 1))
     limit = args.get("limit", 500)
 
-    # SaaS path whitelist check
-    if not _saas_read_allowed(path):
+    # Path whitelist check
+    if not _check_read_allowed(path):
         return json.dumps({
-            "error": SAAS_READ_DENIED_MSG.format(path=path),
+            "error": READ_DENIED_MSG.format(path=path),
             "tool_name": "file_read",
-            "saas_mode": True,
         }, ensure_ascii=False)
 
     resolved = _validate_path(path)

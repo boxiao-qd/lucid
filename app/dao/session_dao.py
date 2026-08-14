@@ -77,6 +77,30 @@ class SessionDAO(BaseDAO):
         await session.commit()
         await session.close()
 
+    async def find_previous_active_session(self, exclude_session_id: str) -> SessionModel | None:
+        """Find the user's most recent session that is not the current one,
+        not deleted, not ended, and is a top-level session (no parent).
+
+        Used to trigger cross-session distillation when a new session starts.
+        Ordered by updated_at desc as a proxy for last activity.
+        """
+        from sqlalchemy import or_
+        session = self._session()
+        result = await session.scalar(
+            select(SessionModel)
+            .where(
+                self._filter_by_user(SessionModel),
+                SessionModel.is_deleted == 0,
+                SessionModel.id != exclude_session_id,
+                SessionModel.parent_session_id.is_(None),
+                or_(SessionModel.status.is_(None), SessionModel.status != "ended"),
+            )
+            .order_by(SessionModel.updated_at.desc())
+            .limit(1)
+        )
+        await session.close()
+        return result
+
     async def add_token_count(self, session_id: str, delta: int) -> None:
         """Accumulate token usage into session.token_count for compressor threshold tracking."""
         if delta <= 0:

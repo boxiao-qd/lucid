@@ -112,3 +112,11 @@ export async function authPost<T>(path: string, body: Record<string, unknown>): 
   }
   return resp.json();
 }
+
+// Tool confirmation — user approves/rejects terminal/code_execute execution
+export function confirmToolExecution(
+  sessionId: string,
+  body: { confirmation_id: string; action: string; text?: string },
+): Promise<{ ok: boolean }> {
+  return apiPost(`/sessions/${sessionId}/tool-confirm`, body);
+}

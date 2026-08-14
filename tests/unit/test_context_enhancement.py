@@ -173,7 +173,6 @@ async def test_build_llm_messages_system_prompt_contains_sections(mock_context_l
     with patch("app.agent.agent_service._build_time_header", return_value="[当前时间]\n2026-01-01 12:00:00（Asia/Shanghai）"), \
          patch("app.agent.agent_service._build_tools_section", return_value="[可用工具]\n  - tool_x: does x"), \
          patch("app.agent.agent_service.settings") as mock_settings:
-        mock_settings.saas_mode = False
 
         messages = await svc._build_llm_messages(session, history)
 
@@ -206,7 +205,6 @@ async def test_build_llm_messages_compression_note_injected(mock_context_loader)
     with patch("app.agent.agent_service._build_time_header", return_value="[当前时间]\nT"), \
          patch("app.agent.agent_service._build_tools_section", return_value=""), \
          patch("app.agent.agent_service.settings") as mock_settings:
-        mock_settings.saas_mode = False
 
         messages = await svc._build_llm_messages(session, history)
 
@@ -229,7 +227,6 @@ async def test_build_llm_messages_no_compression_note_when_clean(mock_context_lo
     with patch("app.agent.agent_service._build_time_header", return_value="[当前时间]\nT"), \
          patch("app.agent.agent_service._build_tools_section", return_value=""), \
          patch("app.agent.agent_service.settings") as mock_settings:
-        mock_settings.saas_mode = False
 
         messages = await svc._build_llm_messages(session, history)
 
@@ -252,7 +249,6 @@ async def test_build_llm_messages_delegation_goal_for_child(mock_context_loader)
     with patch("app.agent.agent_service._build_time_header", return_value="[当前时间]\nT"), \
          patch("app.agent.agent_service._build_tools_section", return_value=""), \
          patch("app.agent.agent_service.settings") as mock_settings:
-        mock_settings.saas_mode = False
 
         messages = await svc._build_llm_messages(session, history)
 
@@ -276,7 +272,6 @@ async def test_build_llm_messages_no_delegation_for_root_session(mock_context_lo
     with patch("app.agent.agent_service._build_time_header", return_value="[当前时间]\nT"), \
          patch("app.agent.agent_service._build_tools_section", return_value=""), \
          patch("app.agent.agent_service.settings") as mock_settings:
-        mock_settings.saas_mode = False
 
         messages = await svc._build_llm_messages(session, history)
 
@@ -305,7 +300,6 @@ async def test_build_llm_messages_context_loader_exception_falls_back():
     with patch("app.agent.agent_service._build_time_header", return_value="[当前时间]\nT"), \
          patch("app.agent.agent_service._build_tools_section", return_value=""), \
          patch("app.agent.agent_service.settings") as mock_settings:
-        mock_settings.saas_mode = False
 
         messages = await svc._build_llm_messages(session, history)
 
@@ -338,7 +332,6 @@ async def test_build_llm_messages_memory_failure_injects_notice():
     with patch("app.agent.agent_service._build_time_header", return_value="[当前时间]\nT"), \
          patch("app.agent.agent_service._build_tools_section", return_value=""), \
          patch("app.agent.agent_service.settings") as mock_settings:
-        mock_settings.saas_mode = False
 
         messages = await svc._build_llm_messages(session, history)
 

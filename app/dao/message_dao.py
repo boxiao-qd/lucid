@@ -88,3 +88,15 @@ class MessageDAO(BaseDAO):
         )
         await session.commit()
         await session.close()
+
+    async def count_by_session(self, session_id: str) -> int:
+        """Count messages in a session (any role). Used for first-message detection."""
+        session = self._session()
+        count = await session.scalar(
+            select(func.count(MessageModel.id)).where(
+                MessageModel.session_id == session_id,
+                self._filter_by_user(MessageModel),
+            )
+        )
+        await session.close()
+        return count or 0

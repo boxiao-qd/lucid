@@ -6,6 +6,7 @@ import { ToolCallBlock } from "@/components/base/ToolCallBlock";
 import { DelegationProgress } from "@/components/base/DelegationProgress";
 import { CompressionBubble } from "@/components/base/CompressionBubble";
 import { PlanCard } from "@/components/base/PlanCard";
+import { ToolConfirmPanel } from "@/components/base/ToolConfirmPanel";
 import type { MessageItem } from "@/types/api-types";
 import type { ThinkingBlockState, ToolCallBlockState, DelegationBlockState, ContextCompressionData, PlanState } from "@/store/message-store";
 import { useMessageStore } from "@/store/message-store";
@@ -21,6 +22,7 @@ interface MessageFlowProps {
   delegationBlocks: Record<string, DelegationBlockState>;
   compressionEvents: ContextCompressionData[];
   plan: PlanState | null;
+  sessionId: string;
   isLoadingMore?: boolean;
   onScrollNearTop?: () => void;
   scrollRef?: React.RefObject<HTMLDivElement | null>;
@@ -36,6 +38,7 @@ export function MessageFlow({
   delegationBlocks,
   compressionEvents,
   plan,
+  sessionId,
   isLoadingMore,
   onScrollNearTop,
   scrollRef: externalScrollRef,
@@ -157,6 +160,8 @@ export function MessageFlow({
           </div>
         </div>
       )}
+      {/* ── Tool confirmation panel (terminal / code_execute) ────── */}
+      <ToolConfirmPanel sessionId={sessionId} />
       {/* ── Loading indicator: streaming started but no content yet ─── */}
       {streamingMessageId && !streamingDelta && !thinkingBlocks[streamingMessageId] && !visibleMessages.find((m) => m.id === streamingMessageId) && (
         <div className="flex justify-start" role="status" aria-live="polite">

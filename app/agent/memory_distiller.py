@@ -23,6 +23,7 @@ from typing import Protocol
 
 from app.dao.memory_dao import MemoryDAO
 from app.dao.message_dao import MessageDAO
+from app.dao.session_dao import SessionDAO
 from app.agent.llm_router import LLMRouter
 from app.agent.context_loader import ContextLoader
 from app.config import settings
@@ -97,6 +98,80 @@ async def run_distillation_task(
                 session_id[:8], e,
             )
 
+
+async def run_cross_session_distillation(
+    employee_id: int,
+    current_session_id: str,
+    session_factory,
+) -> None:
+    """Background task: distill the previous session's un-distilled messages.
+
+    Triggered when a new session's first message is sent. Replaces the old
+    per-turn fire-and-forget distillation as the primary extraction point.
+    Acquires the per-session lock on the previous session to prevent
+    concurrent distillation.
+    """
+    try:
+        session_dao = SessionDAO(session_factory, employee_id)
+        prev_session = await session_dao.find_previous_active_session(current_session_id)
+
+        if not prev_session:
+            return
+
+        prev_sid = prev_session.id
+        lock = _get_lock(prev_sid)
+        async with lock:
+            msg_dao = MessageDAO(session_factory, employee_id)
+            history, _ = await msg_dao.get_history(prev_sid, limit=10000)
+
+            # Filter to only un-distilled user/assistant messages
+            un_distilled = [
+                {"role": m.role, "content": m.content or ""}
+                for m in history
+                if m.role in ("user", "assistant")
+                and m.is_distilled == 0
+                and m.is_compressed == 0
+            ]
+
+            if not un_distilled:
+                # All messages already distilled — just mark session as ended
+                await session_dao.mark_ended(prev_sid)
+                log.debug("Cross-session distillation: session %s already distilled", prev_sid[:8])
+                return
+
+            distiller = MemoryDistiller(employee_id, session_factory)
+            result = await distiller.distill(
+                employee_id, prev_sid, un_distilled, memory_type="short_term",
+            )
+
+            # Mark messages as distilled
+            distilled_ids = [
+                m.id for m in history
+                if m.role in ("user", "assistant")
+                and m.is_distilled == 0
+                and m.is_compressed == 0
+            ]
+            for mid in distilled_ids:
+                await msg_dao.update(mid, is_distilled=1)
+
+            # Mark previous session as ended so it won't be picked up again
+            await session_dao.mark_ended(prev_sid)
+
+            if result.distilled_count > 0:
+                log.info(
+                    "Cross-session distillation: %d facts from session %s (triggered by %s)",
+                    result.distilled_count, prev_sid[:8], current_session_id[:8],
+                )
+            else:
+                log.debug(
+                    "Cross-session distillation: no new facts from session %s", prev_sid[:8],
+                )
+    except Exception as e:
+        log.warning(
+            "Cross-session distillation failed (triggered by %s): %s",
+            current_session_id[:8], e,
+        )
+
 DISTILL_PROMPT = """你是一个记忆蒸馏器。从以下对话片段中提取需要长期记住的关键信息。
 
 提取规则：
@@ -105,6 +180,12 @@ DISTILL_PROMPT = """你是一个记忆蒸馏器。从以下对话片段中提取
 3. 为每条事实打分 importance：0.0-1.0，越高越重要
 4. key 使用英文 snake_case 唯一标识，如 "preferred_programming_language"
 5. value 用中文简洁描述事实内容
+6. 如果对话中的信息与已有记忆语义相同或高度相似，必须复用已有 key，用更新后的 value 覆盖
+7. 只有在已有记忆中没有语义对应项时，才使用新 key
+
+=== 已有短期记忆 ===
+{existing_memories_text}
+=== 结束 ===
 
 === 对话片段开始 ===
 {messages_text}
@@ -193,7 +274,15 @@ class MemoryDistiller:
         if len(messages_text) > settings.memory_distill_max_input_chars:
             messages_text = messages_text[:settings.memory_distill_max_input_chars]
 
-        prompt = DISTILL_PROMPT.format(messages_text=messages_text)
+        # Load existing STM so the LLM can reuse keys and avoid semantic duplication
+        dao = MemoryDAO(self._session_factory, self._employee_id)
+        existing_stm = await dao.list_memories(memory_type="short_term")
+        existing_memories_text = self._format_existing_memories(existing_stm)
+
+        prompt = DISTILL_PROMPT.format(
+            messages_text=messages_text,
+            existing_memories_text=existing_memories_text,
+        )
 
         # call LLM
         try:
@@ -222,7 +311,6 @@ class MemoryDistiller:
                                       distilled_count=0, skipped_count=skipped)
 
         # upsert into memory with specified type
-        dao = MemoryDAO(self._session_factory, self._employee_id)
         inserted, updated = await dao.upsert_from_distillation(filtered, session_id, memory_type=memory_type)
 
         # clear memory cache so next session sees updated facts
@@ -276,6 +364,26 @@ class MemoryDistiller:
             if content:
                 lines.append(f"[{role}]: {content[:300]}")
         return "\n".join(lines)
+
+    def _format_existing_memories(self, memories: list) -> str:
+        """Format existing STM memories for injection into distillation prompt.
+
+        Sorted by importance desc, capped to 15 items / 2000 chars to control
+        prompt size. The LLM uses this list to reuse keys and avoid semantic
+        duplication when extracting new facts.
+        """
+        if not memories:
+            return "（无）"
+        sorted_mems = sorted(memories, key=lambda m: m.importance, reverse=True)[:15]
+        lines = []
+        total = 0
+        for m in sorted_mems:
+            line = f'- key: "{m.key}", value: "{m.value}", category: "{m.category}", importance: {m.importance}'
+            if total + len(line) > 2000:
+                break
+            lines.append(line)
+            total += len(line)
+        return "\n".join(lines) if lines else "（无）"
 
     def _parse_facts(self, raw: str) -> list[dict]:
         """Parse LLM response into fact dicts."""

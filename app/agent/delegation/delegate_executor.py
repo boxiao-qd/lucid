@@ -59,15 +59,14 @@ class DelegateExecutor:
         model = agent_def.model if agent_def.model and agent_def.model != "inherit" else settings.default_model
         max_turns = agent_def.max_turns
 
-        delegation_id = str(uuid.uuid4())[:8]
-
         # Push delegation_start
+        delegation_id = str(uuid.uuid4())[:8]
         push_event(parent_session_id, SSEEventType.delegation_start, {
+            "child_session_id": delegation_id,
             "subagent_name": agent_type,
             "goal": goal,
             "context": context,
             "max_turns": max_turns,
-            "child_session_id": delegation_id,
         })
 
         # Run sub-agent loop — pure memory, no DB writes for internal messages
@@ -77,11 +76,11 @@ class DelegateExecutor:
 
         for iteration in range(max_turns):
             push_event(parent_session_id, SSEEventType.delegation_update, {
+                "child_session_id": delegation_id,
                 "subagent_name": agent_type,
                 "status": "running",
                 "progress_note": f"Iteration {iteration + 1}",
                 "elapsed_seconds": int(time.time()),
-                "child_session_id": delegation_id,
             })
 
             try:
@@ -136,26 +135,60 @@ class DelegateExecutor:
                 has_used_tools = True
                 child_messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
                 for tc in tool_calls:
-                    executor = get_tool_executor(tc["function"]["name"])
-                    result = await executor(tc["function"]["arguments"], self._employee_id) if executor else json.dumps({"error": "Tool not found"}, ensure_ascii=False)
+                    tool_name = tc["function"]["name"]
+                    args_str = tc["function"]["arguments"]
+
+                    # ── Human-in-the-loop confirmation for terminal / code_execute ──
+                    # Sub-agent tool calls bypass _execute_tool, so we check here.
+                    # Use parent_session_id for approval/confirmation (user watches parent stream).
+                    CONFIRM_TOOLS = {"terminal", "code_execute"}
+                    if tool_name in CONFIRM_TOOLS:
+                        from app.agent.tools.tool_confirmation import (
+                            is_tool_approved, approve_tool_for_session,
+                            request_confirmation, _format_confirmation_content,
+                        )
+                        if not is_tool_approved(parent_session_id, tool_name):
+                            content_str = _format_confirmation_content(tool_name, args_str)
+                            decision = await request_confirmation(
+                                parent_session_id, tool_name, content_str, tc["id"],
+                            )
+                            action = decision.get("action")
+                            if action == "reject":
+                                result = json.dumps({"error": "用户拒绝了本次命令执行"}, ensure_ascii=False)
+                                child_messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+                                continue
+                            elif action == "custom":
+                                result = json.dumps({"user_feedback": decision.get("text", "")}, ensure_ascii=False)
+                                child_messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+                                continue
+                            elif action == "timeout":
+                                result = json.dumps({"error": "确认超时（5 分钟未响应），命令未执行"}, ensure_ascii=False)
+                                child_messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+                                continue
+                            elif action == "approve_session":
+                                approve_tool_for_session(parent_session_id, tool_name)
+                            # approve_once: proceed to execution
+
+                    executor = get_tool_executor(tool_name)
+                    result = await executor(args_str, self._employee_id) if executor else json.dumps({"error": "Tool not found"}, ensure_ascii=False)
                     child_messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
 
             except Exception as exc:
                 log.warning("Sub-agent '%s' failed at iteration %d: %s", agent_type, iteration + 1, exc)
                 push_event(parent_session_id, SSEEventType.delegation_end, {
+                    "child_session_id": delegation_id,
                     "subagent_name": agent_type,
                     "summary": f"Delegation failed: {exc}",
                     "is_error": True,
-                    "child_session_id": delegation_id,
                 })
                 return f"Sub-agent '{agent_type}' failed: {exc}. Please retry or handle this task yourself."
 
         # Push delegation_end
         push_event(parent_session_id, SSEEventType.delegation_end, {
+            "child_session_id": delegation_id,
             "subagent_name": agent_type,
             "summary": summary or "Task completed with no summary",
             "is_error": False,
-            "child_session_id": delegation_id,
         })
 
         # Write summary into parent session history

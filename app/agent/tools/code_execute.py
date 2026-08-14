@@ -17,7 +17,7 @@ TOOL_DEF = {
     "type": "function",
     "function": {
         "name": "code_execute",
-        "description": "Execute Python, JavaScript, or Bash code on the server. Returns exit code, stdout, and stderr. Blocked in SaaS mode.",
+        "description": "Execute Python, JavaScript, or Bash code on the server. Returns exit code, stdout, and stderr. Requires user confirmation before execution.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -35,9 +35,6 @@ async def execute(args_str: str, employee_id: int) -> str:
 
 
 async def execute_with_session(args_str: str, employee_id: int, session_id: str) -> str:
-    if settings.saas_mode:
-        return json.dumps({"error": "code_execute is blocked in SaaS mode", "exit_code": -1}, ensure_ascii=False)
-
     args = json.loads(args_str)
     language = args.get("language", "python")
     code = args.get("code", "")

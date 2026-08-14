@@ -226,6 +226,15 @@ export function ChatSessionPage() {
           s.setTaskNotice(`任务已取消（原因：${d.reason}）`);
           window.setTimeout(() => s.clearTaskNotice(), 3000);
         }
+        if (event.type === "tool_confirm_request" && event.data) {
+          const d = event.data as {
+            confirmation_id: string;
+            tool_name: string;
+            content: string;
+            tool_call_id: string;
+          };
+          s.setPendingConfirmation(d);
+        }
         if (event.type === "message_done") {
           const d = event.data as {
             message_id: string;
@@ -314,6 +323,7 @@ export function ChatSessionPage() {
         delegationBlocks={delegationBlocks}
         compressionEvents={compressionEvents[sessionId!] || []}
         plan={plan}
+        sessionId={sessionId!}
         isLoadingMore={isLoadingMore}
         onScrollNearTop={hasMore ? loadMoreHistory : undefined}
         scrollRef={scrollRef}

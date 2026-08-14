@@ -34,7 +34,6 @@ class Settings(BaseSettings):
     jwt_secret: str = ""
     debug: bool = False
     cors_allow_origins: list[str] = ["http://localhost:3000"]
-    saas_mode: bool = False  # env: SAAS_MODE=true/false — SaaS remote: path-whitelist file ops
 
     # sys-infra: system pre-built skills/subagents, baked into the container image at build time.
     # Structure: sys-infra/skills/{name}/SKILL.md, sys-infra/subagents/{name}/AGENT.md

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { MessageItem } from "@/types/api-types";
 import type { ContextCompressionData } from "@/types/sse-events";
+import type { ToolConfirmRequestData } from "@/types/sse-events";
 
 export interface ThinkingBlockState {
   messageId: string;
@@ -56,6 +57,7 @@ interface MessageState {
   compressionEvents: Record<string, ContextCompressionData[]>;
   toolCallIdsByMessage: Record<string, string[]>;
   plan: PlanState | null;
+  pendingConfirmation: ToolConfirmRequestData | null;
   setMessages: (sessionId: string, messages: MessageItem[]) => void;
   appendMessage: (sessionId: string, message: MessageItem) => void;
   setStreaming: (messageId: string | null) => void;
@@ -88,6 +90,8 @@ interface MessageState {
   setPlan: (plan: PlanState | ((prev: PlanState | null) => PlanState | null)) => void;
   updatePlanStep: (stepIndex: number, status: "pending" | "in_progress" | "completed") => void;
   clearPlan: () => void;
+  setPendingConfirmation: (data: ToolConfirmRequestData) => void;
+  clearPendingConfirmation: () => void;
 }
 
 export const useMessageStore = create<MessageState>((set, get) => ({
@@ -102,6 +106,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   compressionEvents: {},
   toolCallIdsByMessage: {},
   plan: null,
+  pendingConfirmation: null,
   setMessages: (sessionId, messages) =>
     set((s) => ({ messages: { ...s.messages, [sessionId]: messages } })),
   appendMessage: (sessionId, message) =>
@@ -346,6 +351,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       return { plan: { ...s.plan, steps } };
     }),
   clearPlan: () => set({ plan: null }),
+  setPendingConfirmation: (data) => set({ pendingConfirmation: data }),
+  clearPendingConfirmation: () => set({ pendingConfirmation: null }),
   prependMessages: (sessionId, messages) =>
     set((s) => ({
       messages: {

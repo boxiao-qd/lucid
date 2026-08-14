@@ -90,8 +90,10 @@ class AgentService:
         self._llm_router = LLMRouter()
         self._tool_results: dict[str, str] = {}
         self._context_loader = ContextLoader(employee_id, self._session_factory)
+        self._is_cron = False
+        self._parent_session_id: str | None = None
 
-    async def process_message(self, session_id: str, content: str, role: str = "user", user_msg_id: str | None = None, attachments: list | None = None) -> str:
+    async def process_message(self, session_id: str, content: str, role: str = "user", user_msg_id: str | None = None, attachments: list | None = None, is_cron: bool = False) -> str:
         sid = session_id[:8]
         log.info("[%s] 收到消息 — role=%s 长度=%d 预览=%r",
                  sid, role, len(content), content[:80])
@@ -101,8 +103,26 @@ class AgentService:
 
         session = await session_dao.get_by_id(session_id)
 
+        # Store cron/parent flags for tool confirmation logic
+        self._is_cron = is_cron
+        self._parent_session_id = session.parent_session_id if session else None
+
         # Reset circuit breaker on new user message
         reset_circuit_breaker(session_id)
+
+        # Cross-session distillation: if this is the first message of a new
+        # session, fire-and-forget distill the previous session's un-distilled
+        # messages. Replaces the old per-turn distillation as the primary
+        # extraction point — much less frequent, batches a full session's worth.
+        if settings.memory_distill_enabled and user_msg_id is None:
+            prior_count = await msg_dao.count_by_session(session_id)
+            if prior_count == 0:
+                from app.agent.memory_distiller import run_cross_session_distillation
+                asyncio.create_task(
+                    run_cross_session_distillation(
+                        self._employee_id, session_id, self._session_factory,
+                    )
+                )
 
         if user_msg_id is None:
             # Parallel: save user message and load history concurrently
@@ -795,38 +815,6 @@ class AgentService:
                 })
                 log.info("[%s] message_done事件已推送 — msg_id=%s streaming_id=%s", sid, final_msg.id, assistant_id)
 
-                # Fire-and-forget: per-turn incremental distillation → short_term
-                # Ensures short sessions that never trigger compression still get
-                # their memories extracted (matching Claude Code's extractMemories).
-                if settings.memory_distill_enabled:
-                    try:
-                        from app.agent.memory_distiller import (
-                            get_last_distilled_message_id, run_distillation_task,
-                        )
-                        last_distilled = get_last_distilled_message_id(session_id)
-                        new_msgs: list[dict] = []
-                        found_last = last_distilled is None
-                        for m in history:
-                            if m.role not in ("user", "assistant"):
-                                continue
-                            if not found_last:
-                                if m.id == last_distilled:
-                                    found_last = True
-                                continue
-                            new_msgs.append({"role": m.role, "content": m.content or ""})
-
-                        if new_msgs and len(new_msgs) >= settings.memory_distill_min_messages:
-                            last_msg_id = history[-1].id if history else None
-                            if last_msg_id:
-                                asyncio.create_task(
-                                    run_distillation_task(
-                                        self._employee_id, session_id, new_msgs,
-                                        self._session_factory, last_msg_id,
-                                    )
-                                )
-                    except Exception as e:
-                        log.warning("[%s] Per-turn distillation launch failed: %s", sid, e)
-
                 # context compression: triggers pre-compress memory flush + distillation if session token_count > max_tokens
                 try:
                     compressed = await compress_if_needed(self._employee_id, session_id)
@@ -913,6 +901,9 @@ class AgentService:
         finally:
             # Always unregister the run, even on errors
             unregister_run(session_id, assistant_id)
+            # Clean up tool confirmation state for this session
+            from app.agent.tools.tool_confirmation import clear_session_approvals
+            clear_session_approvals(session_id)
 
         return user_msg_id
 
@@ -1192,20 +1183,13 @@ class AgentService:
                 "这些是对早期对话的浓缩，不是原始消息。请将其作为背景参考。"
             )
 
-        # 6. Runtime mode rule (SaaS or server)
-        if settings.saas_mode:
-            runtime_rule = (
-                "IMPORTANT: This agent runs in SaaS mode on a remote server. "
-                "You MUST NOT read, write, search, or edit any files on the server filesystem. "
-                "All user task results should be returned directly as chat messages. "
-                "The terminal tool is restricted to non-file-operation commands only."
-            )
-        else:
-            runtime_rule = (
-                "NOTE: You are a server-side agent. File paths and directories refer to the SERVER, "
-                "not the user's local computer. If a task involves the user's local files (e.g. their Desktop), "
-                "clarify that you can only access server-side paths and suggest alternatives."
-            )
+        # 6. Runtime mode rule
+        runtime_rule = (
+            "[运行环境规则]\n"
+            "- 文件读写仅限：tmp-doc/（读写）、sys-infra/（只读）、scripts/（只读）。\n"
+            "- terminal 和 code_execute 执行前需用户确认。\n"
+            "- 最终产物通过 create_artifact 上传 MinIO。"
+        )
 
         # 6.3. Workdir rule — file output handling for skills
         workdir_rule = (
@@ -1416,6 +1400,43 @@ class AgentService:
         if tool_name == "skill_asset_pull":
             from app.agent.tools.skill_asset_pull import execute_with_session
             return await execute_with_session(args_str, self._employee_id, session_id)
+
+        # ── Human-in-the-loop confirmation for terminal / code_execute ──
+        CONFIRM_TOOLS = {"terminal", "code_execute"}
+        if tool_name in CONFIRM_TOOLS and not self._is_cron:
+            from app.agent.tools.tool_confirmation import (
+                is_tool_approved, approve_tool_for_session, inherit_parent_approvals,
+                request_confirmation, _format_confirmation_content,
+            )
+
+            # Child session inherits parent session's approval set
+            if self._parent_session_id:
+                inherit_parent_approvals(session_id, self._parent_session_id)
+
+            if not is_tool_approved(session_id, tool_name):
+                content = _format_confirmation_content(tool_name, args_str)
+                decision = await request_confirmation(
+                    session_id, tool_name, content, tool_call_id,
+                )
+
+                action = decision.get("action")
+                if action == "reject":
+                    return json.dumps(
+                        {"error": "用户拒绝了本次命令执行"}, ensure_ascii=False,
+                    )
+                elif action == "custom":
+                    return json.dumps(
+                        {"user_feedback": decision.get("text", "")},
+                        ensure_ascii=False,
+                    )
+                elif action == "timeout":
+                    return json.dumps(
+                        {"error": "确认超时（5 分钟未响应），命令未执行"},
+                        ensure_ascii=False,
+                    )
+                elif action == "approve_session":
+                    approve_tool_for_session(session_id, tool_name)
+                # approve_once: proceed to execution without adding to session set
 
         result = await executor(args_str, self._employee_id)
 

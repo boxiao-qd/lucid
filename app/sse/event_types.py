@@ -36,6 +36,8 @@ class SSEEventType(str, Enum):
     vision_start = "vision_start"
     vision_done = "vision_done"
     vision_error = "vision_error"
+    # Human-in-the-loop tool confirmation (terminal/code_execute)
+    tool_confirm_request = "tool_confirm_request"
 
 
 class SSEEventEnvelope(BaseModel):

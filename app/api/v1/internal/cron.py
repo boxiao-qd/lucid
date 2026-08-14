@@ -103,6 +103,7 @@ async def execute_cron_job(
             session_id=cron_session.id,
             content=full_prompt,
             role="user",
+            is_cron=True,
         )
         log.info("[cron] Agent 执行完成: session_id=%s 耗时=%.1fs", cron_session.id, time.time() - t_start)
 
