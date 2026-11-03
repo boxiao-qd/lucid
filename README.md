@@ -169,3 +169,9 @@ lucid/
 ## License
 
 [MIT](./LICENSE)
+
+---
+
+## Contact
+
+Questions or feedback? Email: `1668703867@qq.com`
