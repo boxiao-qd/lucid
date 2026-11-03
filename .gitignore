@@ -1,0 +1,19 @@
+node_modules
+dist
+out
+.DS_Store
+.eslintcache
+*.log*
+.env
+
+# IDE / editor
+.vscode/
+
+# Build caches & temp
+*.tsbuildinfo
+.ruff_cache/
+
+# Backup / original assets
+build/icon.original.*
+build/icon.ico.bak
+resources/icon.original.png

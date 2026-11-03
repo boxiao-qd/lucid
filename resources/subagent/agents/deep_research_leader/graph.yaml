@@ -1,0 +1,28 @@
+agentId: deep_research_leader
+graphType: DAG
+nodes:
+  - agentId: deep_research_leader
+    role: leader
+  - agentId: task_breakdown_agent
+    role: member
+  - agentId: research_agent
+    role: member
+  - agentId: drafting_agent
+    role: member
+  - agentId: review_agent
+    role: member
+  - agentId: revision_agent
+    role: member
+edges:
+  - from: deep_research_leader
+    to: task_breakdown_agent
+  - from: deep_research_leader
+    to: research_agent
+  - from: deep_research_leader
+    to: drafting_agent
+  - from: deep_research_leader
+    to: review_agent
+  - from: deep_research_leader
+    to: revision_agent
+execution:
+  mode: serial
