@@ -41,6 +41,22 @@
 
 ---
 
+## 功能截图
+
+| 1. 首页 | 2. 普通对话 | 3. 执行计划 |
+|:---:|:---:|:---:|
+| ![首页](docs/screenshots/1_首页.jpeg) | ![普通对话](docs/screenshots/2_普通对话.jpeg) | ![执行计划](docs/screenshots/3_执行计划.jpeg) |
+
+| 4. 记忆 | 5. 文生图/图片编辑 | 6. 专家团 |
+|:---:|:---:|:---:|
+| ![记忆](docs/screenshots/4_记忆.jpeg) | ![文生图](docs/screenshots/5_文生图_图片编辑.jpeg) | ![专家团](docs/screenshots/6_专家团1.jpeg) |
+
+| 7. 专家团拓扑 | 8. 按会话索引产物 | 9. 智能体执行 Trace |
+|:---:|:---:|:---:|
+| ![专家团拓扑](docs/screenshots/7_专家团2.jpeg) | ![产物](docs/screenshots/8_按会话索引产物.jpeg) | ![Trace](docs/screenshots/9_智能体执行trace.jpeg) |
+
+---
+
 ## 前置条件
 
 - **Node.js >= 20**（推荐 22）

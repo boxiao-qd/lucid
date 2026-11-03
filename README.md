@@ -41,6 +41,22 @@ The name **Lucid** means clear and transparent. Two principles guide the design:
 
 ---
 
+## Screenshots
+
+| 1. Home | 2. Chat | 3. Execution Plan |
+|:---:|:---:|:---:|
+| ![Home](docs/screenshots/1_首页.jpeg) | ![Chat](docs/screenshots/2_普通对话.jpeg) | ![Plan](docs/screenshots/3_执行计划.jpeg) |
+
+| 4. Memory | 5. Image Gen & Edit | 6. Experts |
+|:---:|:---:|:---:|
+| ![Memory](docs/screenshots/4_记忆.jpeg) | ![Image Gen](docs/screenshots/5_文生图_图片编辑.jpeg) | ![Experts](docs/screenshots/6_专家团1.jpeg) |
+
+| 7. Experts (Graph) | 8. Session Products | 9. Agent Trace |
+|:---:|:---:|:---:|
+| ![Experts Graph](docs/screenshots/7_专家团2.jpeg) | ![Products](docs/screenshots/8_按会话索引产物.jpeg) | ![Trace](docs/screenshots/9_智能体执行trace.jpeg) |
+
+---
+
 ## Prerequisites
 
 - **Node.js >= 20** (22 recommended)
