@@ -82,14 +82,13 @@ Each model entry requires:
 
 ### 2. Web Search (Aliyun IQS)
 
-The `web_search` tool uses Aliyun IQS (Alibaba Cloud Intelligence Query Service). Create a `.env` file in the project root:
+The `web_search` tool uses Aliyun IQS (Alibaba Cloud Intelligence Query Service). Copy `.env.example` to `.env` and fill in your credentials:
 
-```env
-ALIYUN_ACCESS_KEY=your-access-key
-ALIYUN_ACCESS_SECRET=your-access-secret
+```bash
+cp .env.example .env
 ```
 
-> Get these from the [Aliyun RAM console](https://ram.console.aliyun.com/). The IQS service must be activated for your account.
+> Get your AccessKey from the [Aliyun RAM console](https://ram.console.aliyun.com/). The IQS service must be activated for your account.
 
 ### 3. MCP Servers (Optional)
 

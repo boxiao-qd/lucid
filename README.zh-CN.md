@@ -82,11 +82,10 @@ Lucid 不预置任何默认模型凭证。首次使用前，请配置你自己�
 
 ### 2. 网页搜索（阿里云 IQS）
 
-`web_search` 工具使用阿里云 IQS（阿里云智能查询服务）。在项目根目录创建 `.env` 文件：
+`web_search` 工具使用阿里云 IQS（阿里云智能查询服务）。复制 `.env.example` 为 `.env` 并填入你的凭证：
 
-```env
-ALIYUN_ACCESS_KEY=你的AccessKey
-ALIYUN_ACCESS_SECRET=你的AccessSecret
+```bash
+cp .env.example .env
 ```
 
 > 在[阿里云 RAM 控制台](https://ram.console.aliyun.com/)获取 AccessKey，并确保已开通 IQS 服务。
