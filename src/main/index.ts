@@ -77,6 +77,7 @@ import {
 import { getEmbedding } from './memory/embedding-provider'
 import { writeGuardFiles } from './agent/guard/guard-scripts'
 import { getTraces, getAllTraces, clearTraces } from './agent/trace-store'
+import { browserGuestManager } from './browser-use/guest-manager'
 import {
   initScheduler,
   stopScheduler,
@@ -93,6 +94,50 @@ import type { CronJobCreate, CronJobPatch } from './scheduler/types'
 import type { McpServerConfig, MemoryTier } from '../shared/types'
 import type { SettingsConfig } from '../shared/types'
 import type { WebContents } from 'electron'
+import { mkdirSync, appendFileSync, existsSync } from 'fs'
+import { homedir } from 'os'
+
+// --- Browser-use debug log file ---
+// Collects both main process console.log and renderer console-message events
+// filtered to [BrowserUse] / [BrowserPanel] / [browser_use] lines.
+const DEBUG_LOG_DIR = join(homedir(), '.lucid')
+const DEBUG_LOG_PATH = join(DEBUG_LOG_DIR, 'browser-use-debug.log')
+
+function writeDebugLog(source: string, message: string): void {
+  const line = `[${new Date().toISOString()}] [${source}] ${message}\n`
+  try {
+    if (!existsSync(DEBUG_LOG_DIR)) mkdirSync(DEBUG_LOG_DIR, { recursive: true })
+    appendFileSync(DEBUG_LOG_PATH, line, 'utf-8')
+  } catch {
+    /* best-effort */
+  }
+}
+
+// Override console.log/console.error to capture browser-use logs to file
+const origLog = console.log
+const origError = console.error
+console.log = (...args: unknown[]) => {
+  origLog(...args)
+  const msg = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')
+  if (
+    msg.includes('[BrowserUse]') ||
+    msg.includes('[browser_use') ||
+    msg.includes('[BrowserPanel]')
+  ) {
+    writeDebugLog('main', msg)
+  }
+}
+console.error = (...args: unknown[]) => {
+  origError(...args)
+  const msg = args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')
+  if (
+    msg.includes('[BrowserUse]') ||
+    msg.includes('[browser_use') ||
+    msg.includes('[BrowserPanel]')
+  ) {
+    writeDebugLog('main-error', msg)
+  }
+}
 
 function createWindow(): void {
   // Create the browser window.
@@ -107,12 +152,24 @@ function createWindow(): void {
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      sandbox: false,
+      webviewTag: true
     }
   })
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
+  })
+
+  // Capture renderer console messages for browser-use debugging
+  mainWindow.webContents.on('console-message', (_event, _level, message) => {
+    if (
+      message.includes('[BrowserPanel]') ||
+      message.includes('[BrowserUse]') ||
+      message.includes('[browser_use')
+    ) {
+      writeDebugLog('renderer', message)
+    }
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -287,6 +344,7 @@ app.whenReady().then(() => {
   )
   ipcMain.handle('sessions:delete', (_event, id: string) => {
     clearSessionApprovals(id)
+    browserGuestManager.detachGuest(id)
     deleteSession(id)
   })
 
@@ -545,6 +603,26 @@ app.whenReady().then(() => {
   )
   ipcMain.handle('memory:delete', (_event, id: string) => {
     deleteMemory(id)
+  })
+
+  // Browser-use IPC handlers — <webview> guest management
+  ipcMain.handle('browser:attachGuest', (event, sessionId: string, webContentsId: number) => {
+    console.log(
+      `[BrowserUse IPC] browser:attachGuest received: sessionId=${sessionId} wcId=${webContentsId}`
+    )
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!win || win.isDestroyed()) {
+      console.error('[BrowserUse IPC] browser:attachGuest: sender window not found')
+      return
+    }
+    const emit = createEmitter(sessionId, win.webContents)
+    browserGuestManager.attachGuest(sessionId, webContentsId, emit)
+  })
+  ipcMain.handle('browser:detachGuest', (_event, sessionId: string) => {
+    browserGuestManager.detachGuest(sessionId)
+  })
+  ipcMain.handle('browser:close', (_event, sessionId: string) => {
+    browserGuestManager.detachGuest(sessionId)
   })
 
   // Default open or close DevTools by F12 in development

@@ -38,6 +38,19 @@ function getToolCallSubtitle(toolName: string, argsJson: string): string | null 
     if (toolName === 'file_read' && typeof args.purpose === 'string' && args.purpose) {
       return args.purpose
     }
+    if (toolName === 'browser_use') {
+      // purpose first; otherwise summarize the command (navigate → URL,
+      // otherwise the method name).
+      if (typeof args.purpose === 'string' && args.purpose) {
+        const p = args.purpose as string
+        return p.length > 40 ? p.slice(0, 40) + '…' : p
+      }
+      const cmd = args.command as { method?: unknown; url?: unknown } | undefined
+      if (cmd && typeof cmd === 'object' && typeof cmd.method === 'string') {
+        if (cmd.method === 'navigate' && typeof cmd.url === 'string') return cmd.url
+        return cmd.method
+      }
+    }
     if (toolName === 'read' && typeof args.path === 'string') {
       return args.path.split(/[\\/]/).pop() || args.path
     }
@@ -96,7 +109,8 @@ const TOOL_DISPLAY_NAME: Record<string, string> = {
   get_current_time: '当前时间',
   generate_image: '生成图片',
   edit_image: '图片编辑',
-  file_read: '文件读取'
+  file_read: '文件读取',
+  browser_use: '浏览器操作'
 }
 
 const TOOL_ICON: Record<string, string> = {
@@ -121,7 +135,8 @@ const TOOL_ICON: Record<string, string> = {
   get_current_time: '🕐',
   generate_image: '🎨',
   edit_image: '🖌️',
-  file_read: '📑'
+  file_read: '📑',
+  browser_use: '🖥️'
 }
 
 function getToolIcon(toolName: string): string {

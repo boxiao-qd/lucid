@@ -28,6 +28,8 @@ export type AgentEventType =
   | 'context_compacting'
   | 'context_compacted'
   | 'expert_run_started'
+  | 'browser_open'
+  | 'browser_closed'
 
 export interface AgentEventEnvelope {
   type: AgentEventType
@@ -173,4 +175,10 @@ export interface ExpertRunStartedData {
   toolCallId: string
   expertAgentId: string
   expertName: string
+}
+export interface BrowserOpenData {
+  sessionId: string
+}
+export interface BrowserClosedData {
+  sessionId: string
 }

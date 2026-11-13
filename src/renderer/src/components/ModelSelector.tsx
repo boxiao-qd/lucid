@@ -30,13 +30,15 @@ function ModelSelector(): React.JSX.Element {
   }
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative min-w-0">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-stone-500 transition-colors hover:bg-stone-100"
+        className="flex min-w-0 w-full items-center gap-1 rounded-md px-2 py-1 text-xs text-stone-500 transition-colors hover:bg-stone-100"
       >
-        <span className="text-stone-600">{selectedModel ? selectedModel.name : '选择模型'}</span>
-        <span className="select-none text-stone-400">{open ? '▴' : '▾'}</span>
+        <span className="min-w-0 max-w-[160px] truncate text-stone-600">
+          {selectedModel ? selectedModel.name : '选择模型'}
+        </span>
+        <span className="flex-shrink-0 select-none text-stone-400">{open ? '▴' : '▾'}</span>
       </button>
 
       {open && (

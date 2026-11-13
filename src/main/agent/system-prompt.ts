@@ -241,6 +241,25 @@ ${editImageInputRule}
 
 prompt 编写要点（仅 generate_image 适用）：只描述画面本身，不要写任何指令性文字（如"请画""改为"等），否则图片上会出现文字。`
 
+  const browserSection = `[浏览器控制能力]
+你拥有内置浏览器控制能力，通过 browser_use 工具操作。首次调用时浏览器面板会自动打开。
+每次调用 browser_use 都必须传 purpose 字段，用一句话说明本次操作的目的（会展示给用户），例如 browser_use({purpose:'打开官网首页', command:{method:'navigate', url:'https://...'}})。
+
+典型使用流程：
+1. navigate — 导航到目标 URL
+2. snapshot — 获取页面 DOM 快照，返回可交互元素列表及 ref 句柄（如 e1, e2...）
+3. screenshot — 截取当前视口截图，截图会以图片形式返回给你查看
+4. click/type/select — 用 snapshot 返回的 ref 定位元素并操作
+5. getState — 获取当前页面 URL、标题、滚动位置等信息
+
+操作要点：
+- 导航后先 snapshot 或 screenshot 查看页面内容，不要盲目操作
+- snapshot 返回的 ref 是临时句柄，页面导航后需重新 snapshot
+- click 可用 ref（推荐）或坐标 (x,y) 定位
+- type 输入文本时，如需聚焦特定输入框，先传 ref 再传 text
+- 截图结果会自动以图片形式展示给你，无需额外处理
+- 操作完成后可调用 close 关闭浏览器面板`
+
   return [
     langHeader,
     timeHeader,
@@ -250,6 +269,7 @@ prompt 编写要点（仅 generate_image 适用）：只描述画面本身，不
     scheduleSection,
     memorySection,
     imageGenSection,
+    browserSection,
     USER_COMMUNICATION,
     PLAN_METHODOLOGY,
     buildPrioritySection(securityMode)

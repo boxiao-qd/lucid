@@ -45,12 +45,13 @@ function SkillSelector(): React.JSX.Element {
   }
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative min-w-0">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-stone-500 transition-colors hover:bg-stone-100"
+        className="flex min-w-0 w-full items-center gap-1 rounded-md px-2 py-1 text-xs text-stone-500 transition-colors hover:bg-stone-100"
       >
         <svg
+          className="flex-shrink-0"
           width="14"
           height="14"
           viewBox="0 0 24 24"
@@ -62,8 +63,10 @@ function SkillSelector(): React.JSX.Element {
         >
           <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
         </svg>
-        <span className="text-stone-600">{selectedSkill ? selectedSkill.name : '选择技能'}</span>
-        <span className="select-none text-stone-400">{open ? '▴' : '▾'}</span>
+        <span className="min-w-0 max-w-[160px] truncate text-stone-600">
+          {selectedSkill ? selectedSkill.name : '选择技能'}
+        </span>
+        <span className="flex-shrink-0 select-none text-stone-400">{open ? '▴' : '▾'}</span>
       </button>
 
       {open && (

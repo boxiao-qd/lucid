@@ -6,6 +6,24 @@
 import { useState, useRef, useEffect } from 'react'
 import { useSettingsStore } from '../store/settingsStore'
 
+function ShieldIcon(): React.JSX.Element {
+  return (
+    <svg
+      className="flex-shrink-0"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </svg>
+  )
+}
+
 function SecurityModeToggle(): React.JSX.Element {
   const securityMode = useSettingsStore((s) => s.securityMode)
   const setSecurityMode = useSettingsStore((s) => s.setSecurityMode)
@@ -31,33 +49,19 @@ function SecurityModeToggle(): React.JSX.Element {
     setOpen(false)
   }
 
-  // Shield icon
-  const ShieldIcon = (): React.JSX.Element => (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-    </svg>
-  )
-
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative min-w-0">
       <button
         onClick={() => setOpen((v) => !v)}
-        className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors hover:bg-stone-100 ${
+        className={`flex min-w-0 w-full items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors hover:bg-stone-100 ${
           isUnrestricted ? 'text-red-600' : 'text-stone-500'
         }`}
       >
         <ShieldIcon />
-        <span>{isUnrestricted ? '无限制模式' : '安全模式'}</span>
-        <span className="select-none text-stone-400">{open ? '▴' : '▾'}</span>
+        <span className="min-w-0 max-w-[100px] truncate">
+          {isUnrestricted ? '无限制模式' : '安全模式'}
+        </span>
+        <span className="flex-shrink-0 select-none text-stone-400">{open ? '▴' : '▾'}</span>
       </button>
 
       {open && (

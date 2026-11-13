@@ -23,6 +23,7 @@ import { getCurrentTimeTool } from './tools/get-current-time'
 import { fileReadTool } from './tools/file-read'
 import { generateImageTool } from './tools/generate-image'
 import { editImageTool } from './tools/edit-image'
+import { browserUseTool } from './tools/browser-use'
 
 const ALL_TOOLS: ToolDef[] = [
   todoWriteTool,
@@ -46,7 +47,8 @@ const ALL_TOOLS: ToolDef[] = [
   getCurrentTimeTool,
   fileReadTool,
   generateImageTool,
-  editImageTool
+  editImageTool,
+  browserUseTool
 ]
 
 // Build the registry once. Returns a Map for dispatch + the OpenAI function defs

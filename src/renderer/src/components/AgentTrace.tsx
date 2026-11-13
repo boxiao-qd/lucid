@@ -33,6 +33,7 @@ const TOOL_DISPLAY_NAME: Record<string, string> = {
   generate_image: '生成图片',
   edit_image: '图片编辑',
   file_read: '文件读取',
+  browser_use: '浏览器操作',
   TodoWrite: '任务计划'
 }
 

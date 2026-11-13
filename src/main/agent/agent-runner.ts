@@ -825,8 +825,28 @@ export async function runAgent(args: RunAgentArgs): Promise<void> {
             }
           }
 
+          // For browser_use screenshot results, strip base64 from the
+          // persisted + emitted version to avoid JSONL bloat and slow IPC.
+          // The full result (with base64) is kept in `results` for the LLM.
+          let persistedResult = result
+          if (tc.name === 'browser_use' && result.includes('"image":{')) {
+            try {
+              const parsed = JSON.parse(result) as {
+                image?: { base64?: string; mimeType?: string }
+              }
+              if (parsed.image?.base64) {
+                persistedResult = JSON.stringify({
+                  ...parsed,
+                  image: { mimeType: parsed.image.mimeType ?? 'image/png', omitted: true }
+                })
+              }
+            } catch {
+              /* keep original */
+            }
+          }
+
           // Persist tool_result message (with expert ref if session_spawn set it)
-          appendSessionMessage(sessionId, 'assistant', result, 'tool_result', {
+          appendSessionMessage(sessionId, 'assistant', persistedResult, 'tool_result', {
             toolCallId: tc.id,
             toolName: tc.name,
             isError,
@@ -835,7 +855,7 @@ export async function runAgent(args: RunAgentArgs): Promise<void> {
           wrappedEmit('tool_result', {
             tool_call_id: tc.id,
             tool_name: tc.name,
-            result,
+            result: persistedResult,
             is_error: isError
           })
           results.push({ id: tc.id, name: tc.name, result })
@@ -894,6 +914,39 @@ export async function runAgent(args: RunAgentArgs): Promise<void> {
 
         // Append tool result messages (capped inline)
         for (const r of results) {
+          // Detect browser_use screenshot results — construct array-form
+          // content with text + image_url so the LLM can see the screenshot.
+          if (r.name === 'browser_use' && r.result.includes('"image":{')) {
+            try {
+              const parsed = JSON.parse(r.result) as {
+                image?: { base64: string; mimeType: string }
+              }
+              if (parsed.image?.base64) {
+                const { image: _image, ...rest } = parsed
+                let textSummary = JSON.stringify(rest)
+                if (textSummary.length > TOOL_RESULT_INLINE_CAP) {
+                  textSummary = textSummary.slice(0, TOOL_RESULT_INLINE_CAP) + '\n…[内容过长已截断]'
+                }
+                llmMessages.push({
+                  role: 'tool',
+                  tool_call_id: r.id,
+                  content: [
+                    { type: 'text', text: textSummary },
+                    {
+                      type: 'image_url',
+                      image_url: {
+                        url: `data:${parsed.image.mimeType};base64,${parsed.image.base64}`
+                      }
+                    }
+                  ]
+                })
+                continue
+              }
+            } catch {
+              /* fall through to string handling */
+            }
+          }
+
           let inline = r.result
           const cap = r.name === 'session_spawn' ? SESSION_SPAWN_RESULT_CAP : TOOL_RESULT_INLINE_CAP
           if (inline.length > cap) {

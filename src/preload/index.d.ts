@@ -195,6 +195,12 @@ interface ConfirmAPI {
   resize: (height: number) => void
 }
 
+interface BrowserAPI {
+  attachGuest: (sessionId: string, webContentsId: number) => Promise<void>
+  detachGuest: (sessionId: string) => Promise<void>
+  close: (sessionId: string) => Promise<void>
+}
+
 declare global {
   interface Window {
     electron: ElectronAPI
@@ -215,6 +221,7 @@ declare global {
       memory: MemoryAPI
       subagent: SubagentAPI
       confirm: ConfirmAPI
+      browser: BrowserAPI
     }
   }
 }

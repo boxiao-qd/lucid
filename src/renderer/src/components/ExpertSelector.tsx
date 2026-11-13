@@ -49,12 +49,13 @@ function ExpertSelector(): React.JSX.Element {
   }
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative min-w-0">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-stone-500 transition-colors hover:bg-stone-100"
+        className="flex min-w-0 w-full items-center gap-1 rounded-md px-2 py-1 text-xs text-stone-500 transition-colors hover:bg-stone-100"
       >
         <svg
+          className="flex-shrink-0"
           width="14"
           height="14"
           viewBox="0 0 24 24"
@@ -69,10 +70,10 @@ function ExpertSelector(): React.JSX.Element {
           <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
           <path d="M16 3.13a4 4 0 0 1 0 7.75" />
         </svg>
-        <span className="text-stone-600">
+        <span className="min-w-0 max-w-[160px] truncate text-stone-600">
           {selectedExpert ? `${selectedExpert.emoji ?? ''} ${selectedExpert.name}` : '选择专家'}
         </span>
-        <span className="select-none text-stone-400">{open ? '▴' : '▾'}</span>
+        <span className="flex-shrink-0 select-none text-stone-400">{open ? '▴' : '▾'}</span>
       </button>
 
       {open && (

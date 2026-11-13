@@ -8,17 +8,22 @@ import ScheduledTasks from './components/ScheduledTasks'
 import AgentTrace from './components/AgentTrace'
 import ExecutionView from './components/ExecutionView'
 import WindowControls from './components/WindowControls'
+import BrowserPanel from './components/BrowserPanel'
 import { useSessionStore } from './store/sessionStore'
 import { useAgentStore } from './store/agentStore'
 import { useSettingsStore } from './store/settingsStore'
 import { useSkillStore } from './store/skillStore'
 import { useUIStore } from './store/uiStore'
+import { useBrowserStore } from './store/browserStore'
 
 function App(): React.JSX.Element {
   const loadSessions = useSessionStore((s) => s.loadSessions)
   const loadModels = useSettingsStore((s) => s.loadModels)
   const loadSkills = useSkillStore((s) => s.load)
   const view = useUIStore((s) => s.view)
+  const browserOpen = useBrowserStore((s) => s.isOpen)
+  const browserSessionId = useBrowserStore((s) => s.sessionId)
+  const browserExpanded = useBrowserStore((s) => s.expanded)
 
   useEffect(() => {
     // Register the agent event listener once — routes IPC events to agentStore.
@@ -57,6 +62,23 @@ function App(): React.JSX.Element {
       // switched to a different session.
       if (env.type === 'tool_confirm_resolved') {
         useAgentStore.getState().handleEvent(env)
+        return
+      }
+
+      // Browser panel open/close events — always forward so the panel
+      // opens/closes even if the user switched sessions mid-run.
+      if (env.type === 'browser_open') {
+        const data = env.data as { sessionId: string }
+        useBrowserStore.getState().open(data.sessionId)
+        return
+      }
+      if (env.type === 'browser_closed') {
+        // Only close the panel if the event is for the session it shows —
+        // another session's browser closing shouldn't hide this one.
+        const data = env.data as { sessionId: string }
+        if (data.sessionId === useBrowserStore.getState().sessionId) {
+          useBrowserStore.getState().close()
+        }
         return
       }
 
@@ -126,7 +148,17 @@ function App(): React.JSX.Element {
         ) : view === 'execution' ? (
           <ExecutionView />
         ) : (
-          <ChatView />
+          <div className="flex flex-1 overflow-hidden">
+            {/* Chat is hidden when the browser panel is in full-width mode. */}
+            <div
+              className={browserOpen && browserExpanded ? 'hidden' : 'flex-1 overflow-hidden'}
+            >
+              <ChatView />
+            </div>
+            {browserOpen && browserSessionId && (
+              <BrowserPanel sessionId={browserSessionId} />
+            )}
+          </div>
         )}
       </div>
     </div>

@@ -353,7 +353,7 @@ function ChatView(): React.JSX.Element {
   const stopBtn = (
     <button
       onClick={stop}
-      className="flex h-8 items-center rounded-full border border-stone-400 px-4 text-sm font-medium text-stone-600 transition-colors hover:bg-stone-100"
+      className="flex h-8 flex-shrink-0 items-center whitespace-nowrap rounded-full border border-stone-400 px-4 text-sm font-medium text-stone-600 transition-colors hover:bg-stone-100"
     >
       停止
     </button>
@@ -362,7 +362,7 @@ function ChatView(): React.JSX.Element {
   const uploadBtn = (
     <button
       onClick={() => fileInputRef.current?.click()}
-      className="flex h-8 w-8 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600"
+      className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-600"
     >
       <UploadIcon />
     </button>
@@ -456,15 +456,17 @@ function ChatView(): React.JSX.Element {
 
   // Bottom toolbar: [upload] [model selector] [skill selector] [expert selector] ... [send/stop]
   const bottomBar = (
-    <div className="flex items-center justify-between px-3 pb-2 pt-1">
-      <div className="flex items-center gap-0.5">
+    <div className="flex items-center justify-between gap-2 px-3 pb-2 pt-1">
+      {/* Left group shrinks gracefully: selector labels truncate on one line
+          instead of wrapping when the composer is narrow. */}
+      <div className="flex min-w-0 items-center gap-0.5">
         {uploadBtn}
         <ModelSelector />
         <SkillSelector />
         <ExpertSelector />
         <SecurityModeToggle />
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-shrink-0 items-center gap-2">
         {isRunning && stopBtn}
         {sendBtn}
       </div>

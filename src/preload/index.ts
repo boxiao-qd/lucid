@@ -240,6 +240,13 @@ const api = {
     resize: (height: number): void => {
       ipcRenderer.send('confirm:resize', height)
     }
+  },
+  browser: {
+    attachGuest: (sessionId: string, webContentsId: number): Promise<void> =>
+      ipcRenderer.invoke('browser:attachGuest', sessionId, webContentsId),
+    detachGuest: (sessionId: string): Promise<void> =>
+      ipcRenderer.invoke('browser:detachGuest', sessionId),
+    close: (sessionId: string): Promise<void> => ipcRenderer.invoke('browser:close', sessionId)
   }
 }
 
