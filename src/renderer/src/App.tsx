@@ -24,6 +24,20 @@ function App(): React.JSX.Element {
   const browserOpen = useBrowserStore((s) => s.isOpen)
   const browserSessionId = useBrowserStore((s) => s.sessionId)
   const browserExpanded = useBrowserStore((s) => s.expanded)
+  const currentId = useSessionStore((s) => s.currentId)
+
+  // The browser panel belongs to the session that opened it. When the user
+  // switches sessions or creates a new task (currentId changes), close the
+  // panel if it's showing another session's browser. Unmounting BrowserPanel
+  // detaches the guest via its cleanup, so the main process frees that
+  // session's browser too. A background agent that needs the browser again
+  // simply re-opens it (browser_open re-fires on the next browser_use call).
+  useEffect(() => {
+    const { isOpen, sessionId } = useBrowserStore.getState()
+    if (isOpen && sessionId && sessionId !== currentId) {
+      useBrowserStore.getState().close()
+    }
+  }, [currentId])
 
   useEffect(() => {
     // Register the agent event listener once — routes IPC events to agentStore.
@@ -150,14 +164,10 @@ function App(): React.JSX.Element {
         ) : (
           <div className="flex flex-1 overflow-hidden">
             {/* Chat is hidden when the browser panel is in full-width mode. */}
-            <div
-              className={browserOpen && browserExpanded ? 'hidden' : 'flex-1 overflow-hidden'}
-            >
+            <div className={browserOpen && browserExpanded ? 'hidden' : 'flex-1 overflow-hidden'}>
               <ChatView />
             </div>
-            {browserOpen && browserSessionId && (
-              <BrowserPanel sessionId={browserSessionId} />
-            )}
+            {browserOpen && browserSessionId && <BrowserPanel sessionId={browserSessionId} />}
           </div>
         )}
       </div>

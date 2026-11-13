@@ -39,6 +39,27 @@ class BrowserGuestManager {
       return
     }
 
+    // Route new-window requests (target="_blank" links, window.open) back
+    // into the guest itself — the browser panel is single-pane, so the
+    // linked page must render in place, never in a new native window.
+    // Applies to both manual clicks and CDP-dispatched clicks, since both
+    // go through the guest's window-open pipeline.
+    // about:blank / empty URLs are denied without navigating, so pages
+    // using window.open('') popups don't wipe the current page.
+    wc.setWindowOpenHandler(({ url }) => {
+      try {
+        const u = new URL(url)
+        if (u.protocol === 'http:' || u.protocol === 'https:') {
+          void wc.loadURL(url).catch(() => {
+            /* best-effort — page may have navigated meanwhile */
+          })
+        }
+      } catch {
+        /* not a valid/allowed URL — just deny the popup */
+      }
+      return { action: 'deny' }
+    })
+
     // Attach CDP debugger if not already attached.
     // Note: attach() takes an optional protocolVersion (e.g. "1.3"), NOT a
     // session title. Omit it to use the latest CDP protocol version supported
